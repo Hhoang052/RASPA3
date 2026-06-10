@@ -168,6 +168,12 @@ export struct System
   SimulationBox simulationBox;
   bool containsTheFractionalMolecule{true};
 
+  [[nodiscard]] bool containsFractionalMoleculeForComponent(std::size_t selectedComponent) const
+  {
+    return containsTheFractionalMolecule && selectedComponent < numberOfFractionalMoleculesPerComponent.size() &&
+           numberOfFractionalMoleculesPerComponent[selectedComponent] > 0uz;
+  }
+
   // A contiguous list of adsorbate atoms per component for easy and fast looping
   // The atoms-order is defined as increasing per component and molecule.
   // Because the number of atoms is fixed per component it is easy to access the n-th molecule

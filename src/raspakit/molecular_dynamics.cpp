@@ -49,6 +49,7 @@ import integrators_update;
 import integrators_cputime;
 import interpolation_energy_grid;
 
+
 MolecularDynamics::MolecularDynamics() : random(std::nullopt) {};
 
 MolecularDynamics::MolecularDynamics(InputReader& reader) noexcept
@@ -261,9 +262,10 @@ void MolecularDynamics::initialize(std::function<void()> call_back_function, std
 
       for (System& system : systems)
       {
-        for (Component& component : system.components)
+        for (std::size_t componentId{0uz}; Component& component : system.components)
         {
-          component.lambdaGC.sampleOccupancy(system.containsTheFractionalMolecule);
+          component.lambdaGC.sampleOccupancy(system.containsFractionalMoleculeForComponent(componentId));
+          ++componentId;
         }
       }
     }

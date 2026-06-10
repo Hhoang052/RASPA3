@@ -40,6 +40,7 @@ import interactions_ewald;
 import equation_of_states;
 import interpolation_energy_grid;
 
+
 MonteCarloTransitionMatrix::MonteCarloTransitionMatrix() : random(std::nullopt) {};
 
 MonteCarloTransitionMatrix::MonteCarloTransitionMatrix(InputReader& reader) noexcept
@@ -162,6 +163,7 @@ void MonteCarloTransitionMatrix::performCycle()
         selectedSystem.tmmc.numberOfSteps++;
         break;
       case SimulationStage::Equilibration:
+      {
         MC_Moves::performRandomMoveEquilibration(random, selectedSystem, selectedSecondSystem, selectedComponent,
                                                  fractionalMoleculeSystem);
 
@@ -170,12 +172,19 @@ void MonteCarloTransitionMatrix::performCycle()
         selectedSystem.tmmc.numberOfSteps++;
         selectedSystem.tmmc.adjustBias();
 
+        const bool selectedSystemContainsFractionalForComponent =
+            selectedSystem.containsFractionalMoleculeForComponent(selectedComponent);
+        const bool selectedSecondSystemContainsFractionalForComponent =
+            selectedSecondSystem.containsFractionalMoleculeForComponent(selectedComponent);
+
         selectedSystem.components[selectedComponent].lambdaGC.WangLandauIteration(
-            PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample, selectedSystem.containsTheFractionalMolecule);
+            PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample,
+            selectedSystemContainsFractionalForComponent);
         selectedSecondSystem.components[selectedComponent].lambdaGC.WangLandauIteration(
             PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample,
-            selectedSecondSystem.containsTheFractionalMolecule);
+            selectedSecondSystemContainsFractionalForComponent);
         break;
+      }
       case SimulationStage::Production:
         MC_Moves::performRandomMoveProduction(random, selectedSystem, selectedSecondSystem, selectedComponent,
                                               fractionalMoleculeSystem, estimation.currentBin);
@@ -189,9 +198,15 @@ void MonteCarloTransitionMatrix::performCycle()
         break;
     }
 
-    selectedSystem.components[selectedComponent].lambdaGC.sampleOccupancy(selectedSystem.containsTheFractionalMolecule);
+    const bool selectedSystemContainsFractionalForComponent =
+        selectedSystem.containsFractionalMoleculeForComponent(selectedComponent);
+    const bool selectedSecondSystemContainsFractionalForComponent =
+        selectedSecondSystem.containsFractionalMoleculeForComponent(selectedComponent);
+
+    selectedSystem.components[selectedComponent].lambdaGC.sampleOccupancy(
+        selectedSystemContainsFractionalForComponent);
     selectedSecondSystem.components[selectedComponent].lambdaGC.sampleOccupancy(
-        selectedSecondSystem.containsTheFractionalMolecule);
+        selectedSecondSystemContainsFractionalForComponent);
   }
 }
 

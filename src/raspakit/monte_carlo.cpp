@@ -44,6 +44,7 @@ import interactions_ewald;
 import equation_of_states;
 import interpolation_energy_grid;
 
+
 MonteCarlo::MonteCarlo() : outputToFiles(false), random(std::nullopt) {};
 
 MonteCarlo::MonteCarlo(InputReader& reader) noexcept
@@ -270,16 +271,24 @@ void MonteCarlo::performCycle()
                                                   fractionalMoleculeSystem);
         break;
       case SimulationStage::Equilibration:
+      {
         MC_Moves::performRandomMoveEquilibration(random, selectedSystem, selectedSecondSystem, selectedComponent,
                                                  fractionalMoleculeSystem);
 
+        const bool selectedSystemContainsFractionalForComponent =
+            selectedSystem.containsFractionalMoleculeForComponent(selectedComponent);
+        const bool selectedSecondSystemContainsFractionalForComponent =
+            selectedSecondSystem.containsFractionalMoleculeForComponent(selectedComponent);
+
         selectedSystem.components[selectedComponent].lambdaGC.WangLandauIteration(
-            PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample, selectedSystem.containsTheFractionalMolecule);
+            PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample,
+            selectedSystemContainsFractionalForComponent);
 
         selectedSecondSystem.components[selectedComponent].lambdaGC.WangLandauIteration(
             PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample,
-            selectedSecondSystem.containsTheFractionalMolecule);
+            selectedSecondSystemContainsFractionalForComponent);
         break;
+      }
       case SimulationStage::Production:
         MC_Moves::performRandomMoveProduction(random, selectedSystem, selectedSecondSystem, selectedComponent,
                                               fractionalMoleculeSystem, estimation.currentBin);
@@ -287,9 +296,15 @@ void MonteCarlo::performCycle()
         break;
     }
 
-    selectedSystem.components[selectedComponent].lambdaGC.sampleOccupancy(selectedSystem.containsTheFractionalMolecule);
+    const bool selectedSystemContainsFractionalForComponent =
+        selectedSystem.containsFractionalMoleculeForComponent(selectedComponent);
+    const bool selectedSecondSystemContainsFractionalForComponent =
+        selectedSecondSystem.containsFractionalMoleculeForComponent(selectedComponent);
+
+    selectedSystem.components[selectedComponent].lambdaGC.sampleOccupancy(
+        selectedSystemContainsFractionalForComponent);
     selectedSecondSystem.components[selectedComponent].lambdaGC.sampleOccupancy(
-        selectedSecondSystem.containsTheFractionalMolecule);
+        selectedSecondSystemContainsFractionalForComponent);
   }
 }
 
@@ -498,10 +513,11 @@ void MonteCarlo::equilibrate(std::function<void()> call_back_function, std::size
         if (outputToFiles)
         {
           std::filesystem::create_directories("bias_factors");
-          for (Component& component : system.components)
+          for (std::size_t componentId{0}; Component& component : system.components)
           {
             component.lambdaGC.writeBiasingFile(
-                std::format("bias_factors/lambda_bias_{}.s{}.json", component.name, system_id));
+                std::format("bias_factors/lambda_bias_{}.c{}.s{}.json", component.name, componentId, system_id));
+            ++componentId;
           }
         }
 
@@ -611,10 +627,11 @@ void MonteCarlo::production(std::function<void()> call_back_function, std::size_
     std::filesystem::create_directories("bias_factors");
     for (std::size_t system_id{0}; System& system : systems)
     {
-      for (Component& component : system.components)
+      for (std::size_t componentId{0}; Component& component : system.components)
       {
         component.lambdaGC.writeBiasingFile(
-            std::format("bias_factors/lambda_bias_{}.s{}.json", component.name, system_id));
+            std::format("bias_factors/lambda_bias_{}.c{}.s{}.json", component.name, componentId, system_id));
+        ++componentId;
       }
 
       ++system_id;
