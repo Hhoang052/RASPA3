@@ -135,12 +135,6 @@ System::System(ForceField forcefield, std::optional<SimulationBox> box, bool has
       averageSimulationBox(numberOfBlocks),
       interpolationGrids(forceField.pseudoAtoms.size() + 1, std::nullopt)
 {
-  // set the system-ids
-  //for(std::size_t i = 0; i < components.size(); ++i)
-  //{
-  //  components[i].componentId = i;
-  //}
-
   if (box.has_value())
   {
     simulationBox = box.value();
@@ -152,6 +146,7 @@ System::System(ForceField forcefield, std::optional<SimulationBox> box, bool has
   rescaleMoveProbabilities();
   rescaleMolarFractions();
   computeNumberOfPseudoAtoms();
+
 
   createFrameworks();
   if (framework.has_value())
@@ -2179,8 +2174,9 @@ std::string System::writeMCMoveStatistics() const
 
     if (component.hasFractionalMolecule)
     {
-      double imposedChemicalPotential = std::log(beta * component.molFraction * pressure) / beta;
-      double imposedFugacity = component.molFraction * pressure;
+      double imposedChemicalPotential = std::log(beta * component.fugacityCoefficient.value_or(1.0) * 
+                                                 component.molFraction * pressure) / beta;
+      double imposedFugacity = component.fugacityCoefficient.value_or(1.0) * component.molFraction * pressure;
 
       std::print(stream, "{}",
                  component.lambdaGC.writeAveragesStatistics(beta, imposedChemicalPotential, imposedFugacity));
