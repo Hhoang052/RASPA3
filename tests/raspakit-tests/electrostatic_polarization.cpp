@@ -56,12 +56,18 @@ TEST(electrostatic_polarization, Test_2_CO2_in_ITQ_29_2x2x2)
   spanOfMoleculeAtoms[5].scalingCoulomb = 1.0;
 
   RunningEnergy energy = system.computeTotalEnergies();
+  const std::pair<EnergyStatus, double3x3> pressureProperties = system.computeMolecularPressure();
+  const EnergyStatus energyOnlyProperties = system.computeMolecularEnergyStatus();
 
   // Total polarization energy for the framework + reciprocal + molecule-molecule (real-space) field model.
   // The intramolecular reciprocal-exclusion field is intentionally not part of the field (the reciprocal field
   // is built from the fixed framework structure factor only), and the molecule-molecule contribution is included
   // because omitInterPolarization == false.
   EXPECT_NEAR(energy.polarization * Units::EnergyToKelvin, -1.3034969457316241, 1e-6);
+  EXPECT_NEAR(energyOnlyProperties.polarizationEnergy.energy, pressureProperties.first.polarizationEnergy.energy,
+              1e-10);
+  EXPECT_NEAR(energyOnlyProperties.polarizationEnergy.energy, energy.polarization, 1e-10);
+  EXPECT_NEAR(energyOnlyProperties.totalEnergy.energy, pressureProperties.first.totalEnergy.energy, 1e-8);
 }
 
 static double maxFieldDifference(std::span<const double3> a, std::span<const double3> b)

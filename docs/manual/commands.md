@@ -929,6 +929,17 @@ reported separately at the end of the simulation.
     stochastic Monte Carlo step, conserved-energy drift is meaningful only
     between accepted exchanges.
 
+-   `"ComputePressure" : boolean`\
+    Controls instantaneous molecular-pressure sampling and output (default:
+    `true`). When `false`, RASPA still evaluates the complete component-resolved
+    energy, including energy-tail, Ewald, intramolecular, polarization, and
+    external-field contributions, but skips virial gradients, strain
+    derivatives, pressure-tail and rigid-molecule virial corrections, and
+    pressure statistics. The imposed reservoir pressure used by GCMC/CFCMC and
+    volume-move acceptance is unchanged. `false` is incompatible with MD
+    thermobarostats and elastic constants from stress fluctuations because
+    those algorithms require instantaneous stress.
+
 -   `"ComputeElasticConstantsFromFluctuations" : boolean`\
     Enables an isothermal elastic-tensor calculation during fixed-cell NVT
     molecular dynamics. Each observation accumulates the instantaneous affine

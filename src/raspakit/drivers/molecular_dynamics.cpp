@@ -1180,7 +1180,7 @@ void MolecularDynamics::production(std::function<void()> call_back_function, std
       if (currentCycle % 10uz == 0uz || currentCycle % printEvery == 0uz)
       {
         std::chrono::steady_clock::time_point time1 = std::chrono::steady_clock::now();
-        std::pair<EnergyStatus, double3x3> molecularPressure = system.computeMolecularPressure();
+        std::pair<EnergyStatus, double3x3> molecularPressure = system.computeMolecularPropertiesForSampling();
         system.currentEnergyStatus = molecularPressure.first;
         system.currentExcessPressureTensor = molecularPressure.second / system.simulationBox.volume;
         std::chrono::steady_clock::time_point time2 = std::chrono::steady_clock::now();
@@ -1386,7 +1386,7 @@ void MolecularDynamics::output()
     std::print(stream, "{}", system.averageTranslationalTemperature.writeAveragesStatistics("Translational"));
     std::print(stream, "{}", system.averageRotationalTemperature.writeAveragesStatistics("Rotational"));
 
-    if (!(system.framework.has_value() && system.framework->rigid))
+    if (system.computePressure && !(system.framework.has_value() && system.framework->rigid))
     {
       std::print(stream, "{}", system.averagePressure.writeAveragesStatistics());
     }

@@ -298,6 +298,9 @@ TEST(wolf_polarization, molecular_pressure_includes_polarization_strain)
 
   std::pair<EnergyStatus, double3x3> pressureInfo = system.computeMolecularPressure();
   EXPECT_NEAR(pressureInfo.first.polarizationEnergy.energy, polarizationEnergy, 1e-10);
+  const EnergyStatus energyOnly = system.computeMolecularEnergyStatus();
+  EXPECT_NEAR(energyOnly.polarizationEnergy.energy, pressureInfo.first.polarizationEnergy.energy, 1e-10);
+  EXPECT_NEAR(energyOnly.totalEnergy.energy, pressureInfo.first.totalEnergy.energy, 1e-8);
 
   const double analyticExcessPressure = pressureInfo.second.trace() / (3.0 * system.simulationBox.volume);
 

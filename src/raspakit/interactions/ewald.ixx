@@ -8,6 +8,7 @@ import double3;
 import double3x3;
 import atom;
 import atom_dynamics;
+export import interactions_molecular_property_mode;
 import running_energy;
 import energy_status;
 import simulationbox;
@@ -275,7 +276,8 @@ std::pair<EnergyStatus, double3x3> computeEwaldFourierEnergyStrainDerivative(
     const SimulationBox &simulationBox, const std::optional<Framework> &framework,
     const std::vector<Component> &components, const std::vector<std::size_t> &numberOfMoleculesPerComponent,
     std::span<const Atom> atomData, std::span<AtomDynamics> atomDynamics, double netChargeFramework,
-    std::vector<double> netChargePerComponent) noexcept;
+    std::vector<double> netChargePerComponent,
+    MolecularPropertyMode mode = MolecularPropertyMode::EnergyVirialAndPolarizationFieldStrain) noexcept;
 
 /**
  * \brief Accepts a move by updating the stored Ewald Fourier components.

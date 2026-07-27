@@ -136,6 +136,64 @@ TEST(INPUT_READER_MD, accepts_nvt_stress_fluctuation_elastic_constants)
   EXPECT_EQ(reader.systems[0].elasticConstantsSampleEvery, 25u);
 }
 
+TEST(INPUT_READER_MD, reads_compute_pressure_and_applies_explicit_restart_override)
+{
+  TemporaryDirectory workspace = makeBoxMdWorkspace();
+  nlohmann::json input = readNVTExample();
+  input["Systems"][0]["ComputePressure"] = false;
+  TemporaryInput temporary(std::move(input), "compute_pressure_false", workspace.path());
+  ScopedCurrentPath currentPath(workspace.path());
+
+  InputReader reader(temporary.path().filename().string());
+  ASSERT_EQ(reader.systems.size(), 1u);
+  EXPECT_FALSE(reader.systems[0].computePressure);
+
+  std::vector<System> restoredSystems = reader.systems;
+  restoredSystems[0].computePressure = true;
+  reader.applyComputePressureOverrides(restoredSystems);
+  EXPECT_FALSE(restoredSystems[0].computePressure);
+}
+
+TEST(INPUT_READER_MD, restart_value_wins_when_compute_pressure_is_not_in_input)
+{
+  TemporaryDirectory workspace = makeBoxMdWorkspace();
+  nlohmann::json input = readNVTExample();
+  TemporaryInput temporary(std::move(input), "compute_pressure_restart", workspace.path());
+  ScopedCurrentPath currentPath(workspace.path());
+
+  InputReader reader(temporary.path().filename().string());
+  std::vector<System> restoredSystems = reader.systems;
+  restoredSystems[0].computePressure = false;
+  reader.applyComputePressureOverrides(restoredSystems);
+  EXPECT_FALSE(restoredSystems[0].computePressure);
+}
+
+TEST(INPUT_READER_MD, rejects_compute_pressure_false_with_thermobarostat)
+{
+  TemporaryDirectory workspace = makeBoxMdWorkspace();
+  nlohmann::json input = readNVTExample();
+  input["Systems"][0]["Ensemble"] = "MuPT";
+  input["Systems"][0]["ExternalPressure"] = 1.0e5;
+  input["Systems"][0]["ComputePressure"] = false;
+  input["Components"][0]["SwapProbability"] = 1.0;
+  TemporaryInput temporary(std::move(input), "compute_pressure_barostat", workspace.path());
+  ScopedCurrentPath currentPath(workspace.path());
+
+  EXPECT_THROW(InputReader reader(temporary.path().filename().string()), std::runtime_error);
+}
+
+TEST(INPUT_READER_MD, rejects_compute_pressure_false_with_stress_fluctuations)
+{
+  TemporaryDirectory workspace = makeBoxMdWorkspace();
+  nlohmann::json input = readNVTExample();
+  input["Systems"][0]["ComputePressure"] = false;
+  input["Systems"][0]["ComputeElasticConstantsFromFluctuations"] = true;
+  TemporaryInput temporary(std::move(input), "compute_pressure_elastic", workspace.path());
+  ScopedCurrentPath currentPath(workspace.path());
+
+  EXPECT_THROW(InputReader reader(temporary.path().filename().string()), std::runtime_error);
+}
+
 TEST(INPUT_READER_MD, rejects_non_nvt_stress_fluctuation_elastic_constants)
 {
   TemporaryDirectory workspace = makeBoxMdWorkspace();

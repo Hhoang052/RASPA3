@@ -891,7 +891,7 @@ void MonteCarlo::production(std::function<void()> call_back_function, std::size_
       if (currentCycle % 10uz == 0uz || currentCycle % printEvery == 0uz)
       {
         std::chrono::steady_clock::time_point time1 = std::chrono::steady_clock::now();
-        std::pair<EnergyStatus, double3x3> molecularPressure = system.computeMolecularPressure();
+        std::pair<EnergyStatus, double3x3> molecularPressure = system.computeMolecularPropertiesForSampling();
         system.currentEnergyStatus = molecularPressure.first;
         system.currentExcessPressureTensor = molecularPressure.second / system.simulationBox.volume;
         std::chrono::steady_clock::time_point time2 = std::chrono::steady_clock::now();
@@ -1053,7 +1053,7 @@ void MonteCarlo::production(std::function<void()> call_back_function, std::size_
 
       system.forceField.initializeAutomaticCutOff(system.simulationBox);
 
-      std::pair<EnergyStatus, double3x3> molecularPressure = system.computeMolecularPressure();
+      std::pair<EnergyStatus, double3x3> molecularPressure = system.computeMolecularPropertiesForSampling();
       system.currentEnergyStatus = molecularPressure.first;
       system.currentExcessPressureTensor = molecularPressure.second / system.simulationBox.volume;
 
@@ -1176,7 +1176,7 @@ void MonteCarlo::output()
         stream, "{}",
         system.averageEnergies.writeAveragesStatistics(system.hasExternalField, system.framework, system.components));
 
-    if (!(system.framework.has_value() && system.framework->rigid))
+    if (system.computePressure && !(system.framework.has_value() && system.framework->rigid))
     {
       std::print(stream, "{}", system.averagePressure.writeAveragesStatistics());
     }
@@ -1217,7 +1217,8 @@ void MonteCarlo::output()
 
     outputJsons[system_id]["properties"]["averageEnergies"] =
         system.averageEnergies.jsonAveragesStatistics(system.hasExternalField, system.framework, system.components);
-    outputJsons[system_id]["properties"]["averagePressure"] = system.averagePressure.jsonAveragesStatistics();
+    if (system.computePressure)
+      outputJsons[system_id]["properties"]["averagePressure"] = system.averagePressure.jsonAveragesStatistics();
     outputJsons[system_id]["properties"]["averageEnthalpy"] =
         system.averageEnthalpiesOfAdsorption.jsonAveragesStatistics(system.swappableComponents, system.components);
     outputJsons[system_id]["properties"]["averagePartialMolarProperties"] =

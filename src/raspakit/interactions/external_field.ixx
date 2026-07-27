@@ -30,7 +30,8 @@ export namespace Interactions
  */
 void computeExternalFieldEnergy(bool hasExternalField, const ForceField &forceField, const SimulationBox &simulationBox,
                                 std::span<const Atom> moleculeAtoms, RunningEnergy &energyStatus,
-                                const std::optional<InterpolationEnergyGrid> &externalFieldGrid) noexcept;
+                                const std::optional<InterpolationEnergyGrid> &externalFieldGrid,
+                                EnergyStatus *detailedEnergyStatus = nullptr) noexcept;
 
 /**
  * \brief Computes the tail correction for the external field energy.

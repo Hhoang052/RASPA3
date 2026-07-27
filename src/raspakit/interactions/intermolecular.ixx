@@ -14,6 +14,7 @@ import simulationbox;
 import forcefield;
 import component;
 import interactions_pair_kernel;
+export import interactions_molecular_property_mode;
 
 export namespace Interactions
 {
@@ -209,7 +210,8 @@ void computeInterMolecularGradientMolecule(const ForceField& forceField, const S
 std::pair<EnergyStatus, double3x3> computeInterMolecularEnergyStrainDerivative(
     const ForceField& forceField, const std::vector<Component>& components, const SimulationBox& simulationBox,
     std::span<const Atom> moleculeAtoms, std::span<AtomDynamics> moleculeDynamics,
-    const PolarizationFieldStrain* polarizationGather = nullptr) noexcept;
+    const PolarizationFieldStrain* polarizationGather = nullptr,
+    MolecularPropertyMode mode = MolecularPropertyMode::EnergyVirialAndPolarizationFieldStrain) noexcept;
 
 /**
  * \brief Computes the inter-molecular electric potential for each atom.

@@ -101,6 +101,7 @@ export struct InputReader
    * \throws std::runtime_error If the input file does not exist, cannot be parsed, or contains invalid data.
    */
   InputReader(const std::string inputFile);
+  void applyComputePressureOverrides(std::span<System> targetSystems) const;
 
   // Member Variables
 
@@ -165,6 +166,7 @@ export struct InputReader
 
   ForceField forceField;          ///< Force field used for defining interactions in the simulation.
   std::vector<System> systems{};  ///< Vector of simulation systems configured for the simulation.
+  std::vector<std::optional<bool>> computePressureOverrides{};
 
   std::string displayName{"Column"};  ///< Name used for display purposes.
   double temperature{-1.0};           ///< Simulation temperature.

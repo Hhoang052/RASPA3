@@ -686,7 +686,7 @@ void MonteCarloTransitionMatrix::production()
       if (currentCycle % 10uz == 0uz || currentCycle % printEvery == 0uz)
       {
         std::chrono::steady_clock::time_point time1 = std::chrono::steady_clock::now();
-        std::pair<EnergyStatus, double3x3> molecularPressure = system.computeMolecularPressure();
+        std::pair<EnergyStatus, double3x3> molecularPressure = system.computeMolecularPropertiesForSampling();
         system.currentEnergyStatus = molecularPressure.first;
         system.currentExcessPressureTensor = molecularPressure.second / system.simulationBox.volume;
         std::chrono::steady_clock::time_point time2 = std::chrono::steady_clock::now();

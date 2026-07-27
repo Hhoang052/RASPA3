@@ -428,7 +428,8 @@ void ParallelThermodynamicIntegration::runStage(SimulationStage stage, std::size
                 if (cycle % 10uz == 0uz || cycle % printEvery == 0uz)
                 {
                   std::chrono::steady_clock::time_point time1 = std::chrono::steady_clock::now();
-                  std::pair<EnergyStatus, double3x3> molecularPressure = system.computeMolecularPressure();
+                  std::pair<EnergyStatus, double3x3> molecularPressure =
+                      system.computeMolecularPropertiesForSampling();
                   system.currentEnergyStatus = molecularPressure.first;
                   system.currentExcessPressureTensor = molecularPressure.second / system.simulationBox.volume;
                   std::chrono::steady_clock::time_point time2 = std::chrono::steady_clock::now();
@@ -600,7 +601,7 @@ void ParallelThermodynamicIntegration::output()
             System& system = systems[replicaId];
             recomputed[replicaId] = system.computeTotalEnergies();
 
-            std::pair<EnergyStatus, double3x3> molecularPressure = system.computeMolecularPressure();
+            std::pair<EnergyStatus, double3x3> molecularPressure = system.computeMolecularPropertiesForSampling();
             system.currentEnergyStatus = molecularPressure.first;
             system.currentExcessPressureTensor = molecularPressure.second / system.simulationBox.volume;
             system.loadings = LoadingData(system.components.size(), system.numberOfIntegerMoleculesPerComponent,
@@ -722,7 +723,7 @@ void ParallelThermodynamicIntegration::writeReplicaFinalReports(std::vector<Runn
     std::print(replicaStream, "{}",
                system.averageEnergies.writeAveragesStatistics(system.hasExternalField, system.framework,
                                                               system.components));
-    if (!(system.framework.has_value() && system.framework->rigid))
+    if (system.computePressure && !(system.framework.has_value() && system.framework->rigid))
     {
       std::print(replicaStream, "{}", system.averagePressure.writeAveragesStatistics());
     }
@@ -749,7 +750,8 @@ void ParallelThermodynamicIntegration::writeReplicaFinalReports(std::vector<Runn
     }
     replicaJsons[replicaId]["properties"]["averageEnergies"] =
         system.averageEnergies.jsonAveragesStatistics(system.hasExternalField, system.framework, system.components);
-    replicaJsons[replicaId]["properties"]["averagePressure"] = system.averagePressure.jsonAveragesStatistics();
+    if (system.computePressure)
+      replicaJsons[replicaId]["properties"]["averagePressure"] = system.averagePressure.jsonAveragesStatistics();
 
     // the replica's own per-bin dU/dlambda book-keeping (samples over the bins it visited)
     const PropertyLambdaProbabilityHistogram& histogram = system.components[tiComponentId].fixedLambdaHistogram();

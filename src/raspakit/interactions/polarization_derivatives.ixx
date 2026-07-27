@@ -8,6 +8,7 @@ import int3;
 import double3;
 import double3x3;
 import system;
+export import interactions_molecular_property_mode;
 
 /**
  * Analytic first and second derivatives of the (non-self-consistent) polarization energy
@@ -112,5 +113,8 @@ std::pair<double, double3x3> computePolarizationMolecularPressureStrain(const Sy
                                                                         std::span<double3> field,
                                                                         std::span<std::array<double3, 9>> fieldStrain,
                                                                         std::span<const double3> centerOfMassOffset,
-                                                                        std::span<const double> polarizability);
+                                                                        std::span<const double> polarizability,
+                                                                        MolecularPropertyMode mode =
+                                                                            MolecularPropertyMode::
+                                                                                EnergyVirialAndPolarizationFieldStrain);
 }  // namespace Interactions

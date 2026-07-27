@@ -58,6 +58,7 @@ import json;
 import interpolation_energy_grid;
 import write_lammps_data;
 import minimization_cell_layout;
+export import interactions_molecular_property_mode;
 
 /**
  * \brief Represents the central system for simulations.
@@ -101,7 +102,7 @@ export struct System
          std::vector<std::size_t> initialNumberOfMolecules, std::size_t numberOfBlocks,
          const MCMoveProbabilities& systemProbabilities = MCMoveProbabilities());
 
-  std::uint64_t versionNumber{1};
+  std::uint64_t versionNumber{2};
 
   double temperature{300.0};
   double pressure{1e4};
@@ -178,6 +179,7 @@ export struct System
 
   ForceField forceField;
   bool hasExternalField{true};
+  bool computePressure{true};
 
   std::vector<std::vector<std::size_t>> numberOfPseudoAtoms;
   std::vector<std::size_t> totalNumberOfPseudoAtoms;
@@ -616,6 +618,10 @@ export struct System
    * virial correction. Does not mutate live AtomDynamics gradients used by MD.
    */
   [[nodiscard]] std::pair<EnergyStatus, double3x3> computeMolecularPressure() noexcept;
+  [[nodiscard]] EnergyStatus computeMolecularEnergyStatus() noexcept;
+  [[nodiscard]] std::pair<EnergyStatus, double3x3> computeMolecularPropertiesForSampling() noexcept;
+  [[nodiscard]] std::pair<EnergyStatus, double3x3> computeMolecularProperties(
+      Interactions::MolecularPropertyMode mode) noexcept;
 
   /// True when the force-based RDF is enabled and should sample on this cycle.
   [[nodiscard]] bool forceBasedRDFSampleDue(std::size_t currentCycle) const;

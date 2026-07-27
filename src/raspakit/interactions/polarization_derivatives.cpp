@@ -17,6 +17,7 @@ import units;
 import system;
 import potential_pair_derivatives;
 import potential_pair_coulomb;
+import interactions_molecular_property_mode;
 
 namespace
 {
@@ -698,8 +699,10 @@ Interactions::PolarizationDerivatives Interactions::computePolarizationDerivativ
 
 std::pair<double, double3x3> Interactions::computePolarizationMolecularPressureStrain(
     const System& system, std::span<double3> field, std::span<std::array<double3, 9>> fieldStrain,
-    std::span<const double3> centerOfMassOffset, std::span<const double> polarizability)
+    std::span<const double3> centerOfMassOffset, std::span<const double> polarizability,
+    MolecularPropertyMode mode)
 {
+  const bool computeFieldStrain = gathersPolarizationFieldStrain(mode);
   const ForceField& forceField = system.forceField;
   const SimulationBox& box = system.simulationBox;
   const std::span<const Atom> frameworkAtoms = system.spanOfFrameworkAtoms();
@@ -722,7 +725,8 @@ std::pair<double, double3x3> Interactions::computePolarizationMolecularPressureS
                              system.framework->rigid && numberOfFrameworkAtoms > 0;
   if (useReciprocal)
   {
-    const double alphaSquared = forceField.EwaldAlpha * forceField.EwaldAlpha;
+    const double inverseFourAlphaSquared =
+        computeFieldStrain ? 0.25 / (forceField.EwaldAlpha * forceField.EwaldAlpha) : 0.0;
     const std::vector<PrecomputedReciprocal> precomputedReciprocal =
         precomputeFixedFrameworkReciprocal(forceField, box, frameworkAtoms);
 
@@ -730,9 +734,12 @@ std::pair<double, double3x3> Interactions::computePolarizationMolecularPressureS
     {
       if (polarizability[a] == 0.0) continue;
       const double3 positionA = moleculeAtoms[a].position;
-      const double3 sigmaA = centerOfMassOffset[a];
-      const std::array<double, 3> sigmaComponents = {sigmaA.x, sigmaA.y, sigmaA.z};
-      std::array<double3, 9>& tensor = fieldStrain[a];
+      std::array<double, 3> sigmaComponents{};
+      if (computeFieldStrain)
+      {
+        const double3 sigmaA = centerOfMassOffset[a];
+        sigmaComponents = {sigmaA.x, sigmaA.y, sigmaA.z};
+      }
 
       for (const PrecomputedReciprocal& entry : precomputedReciprocal)
       {
@@ -740,16 +747,19 @@ std::pair<double, double3x3> Interactions::computePolarizationMolecularPressureS
         const double cosA = std::cos(argumentA);
         const double sinA = std::sin(argumentA);
         const double fValue = sinA * entry.structureReal - cosA * entry.structureImaginary;
-        const double hValue = cosA * entry.structureReal + sinA * entry.structureImaginary;
 
         field[a] += entry.weight * fValue * entry.k;
 
+        if (!computeFieldStrain) continue;
+
+        const double hValue = cosA * entry.structureReal + sinA * entry.structureImaginary;
+        std::array<double3, 9>& tensor = fieldStrain[a];
         // Strain response of the reciprocal field under F = exp(s B): the weight carries
         // beta = -tr B + (1/(4 alpha^2) + 1/k^2) 2 k.Bk, the wave vector deforms as -Bk, and the phase of
         // a COM-scaled field point moves by -(Bk).sigma_A. Linearized in B this gives
         //   dE_A[i]/dF[j][m] += w [ f (2 phi k_j k_m - delta_jm) k_i - h k_i sigma_j k_m - f delta_ij k_m ].
         const double kSquared = double3::dot(entry.k, entry.k);
-        const double twoPhi = 2.0 * (0.25 / alphaSquared + 1.0 / kSquared);
+        const double twoPhi = 2.0 * (inverseFourAlphaSquared + 1.0 / kSquared);
         const std::array<double, 3> kComponents = {entry.k.x, entry.k.y, entry.k.z};
         for (std::size_t i = 0; i < 3; ++i)
         {
@@ -775,6 +785,8 @@ std::pair<double, double3x3> Interactions::computePolarizationMolecularPressureS
 
     const double3 electricField = field[a];
     energy -= 0.5 * alphaA * double3::dot(electricField, electricField);
+
+    if (!computeFieldStrain) continue;
 
     const std::array<double3, 9>& tensor = fieldStrain[a];
     const double3 row0 =

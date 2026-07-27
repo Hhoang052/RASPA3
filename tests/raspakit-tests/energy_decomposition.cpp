@@ -19,11 +19,11 @@ import component;
 import system;
 import simulationbox;
 import energy_status;
+import energy_status_inter;
 import running_energy;
 import interactions_intermolecular;
 import interactions_framework_molecule;
 import interactions_ewald;
-import energy_status;
 import integrators;
 import integrators_update;
 import integrators_compute;
@@ -57,6 +57,44 @@ void printEnergyDecomposition(const RunningEnergy &energy, const std::string &la
   std::print("  Total Coulomb:         {: .2f} kJ/mol  ({: .2f} K)\n", toKJmol(energy.CoulombEnergy()),
              toKelvin(energy.CoulombEnergy()));
   std::print("\n");
+}
+
+void expectEnergyInterNear(const EnergyInter& lhs, const EnergyInter& rhs, double tolerance = 1e-10)
+{
+  EXPECT_NEAR(lhs.VanDerWaals.energy, rhs.VanDerWaals.energy, tolerance);
+  EXPECT_NEAR(lhs.VanDerWaals.dUdlambda, rhs.VanDerWaals.dUdlambda, tolerance);
+  EXPECT_NEAR(lhs.VanDerWaalsTailCorrection.energy, rhs.VanDerWaalsTailCorrection.energy, tolerance);
+  EXPECT_NEAR(lhs.VanDerWaalsTailCorrection.dUdlambda, rhs.VanDerWaalsTailCorrection.dUdlambda, tolerance);
+  EXPECT_NEAR(lhs.CoulombicReal.energy, rhs.CoulombicReal.energy, tolerance);
+  EXPECT_NEAR(lhs.CoulombicReal.dUdlambda, rhs.CoulombicReal.dUdlambda, tolerance);
+  EXPECT_NEAR(lhs.CoulombicFourier.energy, rhs.CoulombicFourier.energy, tolerance);
+  EXPECT_NEAR(lhs.CoulombicFourier.dUdlambda, rhs.CoulombicFourier.dUdlambda, tolerance);
+  EXPECT_NEAR(lhs.totalInter.energy, rhs.totalInter.energy, tolerance);
+  EXPECT_NEAR(lhs.totalInter.dUdlambda, rhs.totalInter.dUdlambda, tolerance);
+}
+
+void expectDetailedEnergyNear(const EnergyStatus& lhs, const EnergyStatus& rhs, double tolerance = 1e-10)
+{
+  EXPECT_NEAR(lhs.totalEnergy.energy, rhs.totalEnergy.energy, tolerance);
+  EXPECT_NEAR(lhs.totalEnergy.dUdlambda, rhs.totalEnergy.dUdlambda, tolerance);
+  EXPECT_NEAR(lhs.polarizationEnergy.energy, rhs.polarizationEnergy.energy, tolerance);
+  EXPECT_NEAR(lhs.polarizationEnergy.dUdlambda, rhs.polarizationEnergy.dUdlambda, tolerance);
+  EXPECT_NEAR(lhs.dUdlambda, rhs.dUdlambda, tolerance);
+  EXPECT_NEAR(lhs.translationalKineticEnergy, rhs.translationalKineticEnergy, tolerance);
+  EXPECT_NEAR(lhs.rotationalKineticEnergy, rhs.rotationalKineticEnergy, tolerance);
+  EXPECT_NEAR(lhs.noseHooverEnergy, rhs.noseHooverEnergy, tolerance);
+  ASSERT_EQ(lhs.intraComponentEnergies.size(), rhs.intraComponentEnergies.size());
+  ASSERT_EQ(lhs.externalFieldComponentEnergies.size(), rhs.externalFieldComponentEnergies.size());
+  ASSERT_EQ(lhs.frameworkComponentEnergies.size(), rhs.frameworkComponentEnergies.size());
+  ASSERT_EQ(lhs.interComponentEnergies.size(), rhs.interComponentEnergies.size());
+  for (std::size_t i = 0; i < lhs.intraComponentEnergies.size(); ++i)
+    EXPECT_NEAR(lhs.intraComponentEnergies[i].total().energy, rhs.intraComponentEnergies[i].total().energy, tolerance);
+  for (std::size_t i = 0; i < lhs.externalFieldComponentEnergies.size(); ++i)
+    expectEnergyInterNear(lhs.externalFieldComponentEnergies[i], rhs.externalFieldComponentEnergies[i], tolerance);
+  for (std::size_t i = 0; i < lhs.frameworkComponentEnergies.size(); ++i)
+    expectEnergyInterNear(lhs.frameworkComponentEnergies[i], rhs.frameworkComponentEnergies[i], tolerance);
+  for (std::size_t i = 0; i < lhs.interComponentEnergies.size(); ++i)
+    expectEnergyInterNear(lhs.interComponentEnergies[i], rhs.interComponentEnergies[i], tolerance);
 }
 }  // namespace
 
@@ -188,7 +226,103 @@ TEST(energy_decomposition, CO2_Methane_in_Framework)
       system.fixedFrameworkStoredEik, system.interpolationGrids, system.numberOfMoleculesPerComponent);
 
   std::pair<EnergyStatus, double3x3> strainDerivative = system.computeMolecularPressure();
+  EnergyStatus energyOnly = system.computeMolecularEnergyStatus();
 
   EXPECT_NEAR(energy.potentialEnergy(), strainDerivative.first.totalEnergy.energy, 1e-6);
   EXPECT_NEAR(energy.potentialEnergy(), energyForces.potentialEnergy(), 1e-6);
+  expectDetailedEnergyNear(strainDerivative.first, energyOnly, 1e-8);
+}
+
+TEST(energy_decomposition, ComputePressureFalseKeepsDetailedEnergyAndReturnsZeroTensor)
+{
+  ForceField forceField = ForceField::makeZeoliteForceField(12.0, true, false, true);
+  Component methane = Component::makeMethane(forceField, 0);
+  Component co2 = Component::makeCO2(forceField, 1, true);
+  System system =
+      System(forceField, SimulationBox(25.0, 25.0, 25.0), false, 300.0, 1e4, 1.0, {}, {methane, co2}, {}, {8, 12}, 5);
+
+  const std::pair<EnergyStatus, double3x3> pressure = system.computeMolecularPressure();
+  const auto eikXBefore = system.eik_x;
+  const auto eikYBefore = system.eik_y;
+  const auto eikZBefore = system.eik_z;
+  const auto eikXYBefore = system.eik_xy;
+  const auto fixedEikBefore = system.fixedFrameworkStoredEik;
+  const auto storedEikBefore = system.storedEik;
+  std::vector<double3> gradientsBefore;
+  gradientsBefore.reserve(system.atomDynamics.size());
+  for (const AtomDynamics& dynamics : system.atomDynamics) gradientsBefore.push_back(dynamics.gradient);
+
+  system.computePressure = false;
+  const std::pair<EnergyStatus, double3x3> energyOnly = system.computeMolecularPropertiesForSampling();
+
+  expectDetailedEnergyNear(pressure.first, energyOnly.first, 1e-8);
+  for (double value : energyOnly.second.m) EXPECT_DOUBLE_EQ(value, 0.0);
+  EXPECT_EQ(system.eik_x, eikXBefore);
+  EXPECT_EQ(system.eik_y, eikYBefore);
+  EXPECT_EQ(system.eik_z, eikZBefore);
+  EXPECT_EQ(system.eik_xy, eikXYBefore);
+  EXPECT_EQ(system.fixedFrameworkStoredEik, fixedEikBefore);
+  EXPECT_EQ(system.storedEik, storedEikBefore);
+  ASSERT_EQ(system.atomDynamics.size(), gradientsBefore.size());
+  for (std::size_t i = 0; i < gradientsBefore.size(); ++i)
+  {
+    EXPECT_DOUBLE_EQ(system.atomDynamics[i].gradient.x, gradientsBefore[i].x);
+    EXPECT_DOUBLE_EQ(system.atomDynamics[i].gradient.y, gradientsBefore[i].y);
+    EXPECT_DOUBLE_EQ(system.atomDynamics[i].gradient.z, gradientsBefore[i].z);
+  }
+}
+
+TEST(energy_decomposition, EnergyOnlyMatchesPressurePathForFiniteCutoffChargeMethods)
+{
+  for (const ForceField::ChargeMethod method :
+       {ForceField::ChargeMethod::Wolf, ForceField::ChargeMethod::DampedShiftedForce,
+        ForceField::ChargeMethod::ModifiedShiftedForce, ForceField::ChargeMethod::ZeroDipole})
+  {
+    ForceField forceField = ForceField::makeZeoliteForceField(12.0, true, false, true);
+    forceField.chargeMethod = method;
+    forceField.omitEwaldFourier = true;
+    forceField.EwaldAlpha = 0.25;
+    Component co2 = Component::makeCO2(forceField, 0, true);
+    System system =
+        System(forceField, SimulationBox(25.0, 25.0, 25.0), false, 300.0, 1e4, 1.0, {}, {co2}, {}, {4}, 5);
+
+    const EnergyStatus pressure = system.computeMolecularPressure().first;
+    const EnergyStatus energyOnly = system.computeMolecularEnergyStatus();
+    expectDetailedEnergyNear(pressure, energyOnly, 1e-8);
+  }
+}
+
+TEST(energy_decomposition, EnergyOnlyHandlesZeroMolecules)
+{
+  ForceField forceField = ForceField::makeZeoliteForceField(12.0, true, false, true);
+  Component co2 = Component::makeCO2(forceField, 0, true);
+  System system =
+      System(forceField, SimulationBox(25.0, 25.0, 25.0), false, 300.0, 1e4, 1.0, {}, {co2}, {}, {0}, 5);
+
+  const EnergyStatus pressure = system.computeMolecularPressure().first;
+  system.computePressure = false;
+  const auto energyOnly = system.computeMolecularPropertiesForSampling();
+  expectDetailedEnergyNear(pressure, energyOnly.first, 0.0);
+  for (double value : energyOnly.second.m) EXPECT_DOUBLE_EQ(value, 0.0);
+}
+
+TEST(energy_decomposition, ExternalFieldEnergyIsIncludedInDetailedEnergy)
+{
+  ForceField forceField = ForceField::makeZeoliteForceField(12.0, true, false, true);
+  forceField.potentialEnergySurfaceType = ForceField::PotentialEnergySurfaceType::ThirdOrderPolynomialTestFunction;
+  Component methane = Component::makeMethane(forceField, 0);
+  System system =
+      System(forceField, SimulationBox(25.0, 25.0, 25.0), true, 300.0, 1e4, 1.0, {}, {methane}, {}, {1}, 5);
+  system.spanOfMoleculeAtoms().front().position = double3(2.0, 3.0, 4.0);
+
+  const RunningEnergy running = system.computeTotalEnergies();
+  EnergyStatus detailed = system.computeMolecularEnergyStatus();
+  const EnergyStatus pressureDetailed = system.computeMolecularPressure().first;
+
+  EXPECT_NEAR(running.externalFieldVDW, 24.0, 1e-12);
+  EXPECT_NEAR(detailed.externalFieldComponentEnergy(0, 0).VanDerWaals.energy, running.externalFieldVDW, 1e-12);
+  EXPECT_NEAR(detailed.externalFieldMoleculeEnergy.VanDerWaals.energy, running.externalFieldVDW, 1e-12);
+  EXPECT_DOUBLE_EQ(detailed.externalFieldComponentEnergy(0, 0).VanDerWaals.dUdlambda, 0.0);
+  EXPECT_NEAR(detailed.totalEnergy.energy, running.potentialEnergy(), 1e-8);
+  expectDetailedEnergyNear(pressureDetailed, detailed, 1e-12);
 }

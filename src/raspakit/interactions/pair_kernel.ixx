@@ -9,6 +9,7 @@ import double3x3;
 import atom;
 import simulationbox;
 import forcefield;
+export import interactions_molecular_property_mode;
 export import potential_pair_derivatives;
 import potential_pair_vdw;
 import potential_pair_coulomb;
@@ -144,6 +145,16 @@ struct PolarizationFieldStrain
 };
 
 /**
+ * \brief Adds one real-space Coulomb source contribution to a gathered polarization field.
+ */
+inline void accumulatePolarizationField(const PolarizationFieldStrain& gather, std::size_t index,
+                                        double sourceCharge, const double3& d, double firstDerivativeFactor)
+{
+  if (gather.polarizability[index] == 0.0) return;
+  gather.field[index] -= sourceCharge * firstDerivativeFactor * d;
+}
+
+/**
  * \brief Adds one real-space Coulomb source contribution to the gathered polarization field.
  *
  * d = fieldPoint - source (minimum image), delta = d - sigma_fieldPoint + sigma_source, and the
@@ -156,8 +167,11 @@ inline void accumulatePolarizationFieldStrain(const PolarizationFieldStrain& gat
 {
   if (gather.polarizability[index] == 0.0) return;
 
-  // E_A += -q_source * firstDerivativeFactor * d.
-  gather.field[index] -= sourceCharge * firstDerivativeFactor * d;
+  accumulatePolarizationField(gather, index, sourceCharge, d, firstDerivativeFactor);
+
+  // EnergyAndPolarizationField mode only needs E_A. An empty fieldStrain span deliberately disables
+  // all second-derivative/strain accumulation while reusing the same real-space pair walk.
+  if (gather.fieldStrain.empty()) return;
 
   // M[i][j] = -q (f1 delta_ij + f2 d_i d_j) is dE_A/dd of this source; under strain the separation
   // moves with the COM arm, dd/dF[j][m] = e_j delta_m, so dE_A[i]/dF[j][m] += M[i][j] delta_m.

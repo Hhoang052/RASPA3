@@ -20,6 +20,7 @@ import component;
 import coulomb_potential;
 import forcefield;
 import interactions_ewald_kvector;
+import interactions_molecular_property_mode;
 
 namespace
 {
@@ -1563,20 +1564,25 @@ std::pair<EnergyStatus, double3x3> Interactions::computeEwaldFourierEnergyStrain
     const ForceField& forceField, const SimulationBox& simulationBox, const std::optional<Framework>& framework,
     const std::vector<Component>& components, const std::vector<std::size_t>& numberOfMoleculesPerComponent,
     std::span<const Atom> atomData, std::span<AtomDynamics> atomDynamics, double netChargeFramework,
-    std::vector<double> netChargePerComponent) noexcept
+    std::vector<double> netChargePerComponent, MolecularPropertyMode mode) noexcept
 {
+  const bool computeVirial = computesVirial(mode);
   double alpha = forceField.EwaldAlpha;
   double alpha_squared = alpha * alpha;
   double singleIonFourierSum = 0.0;
 
-  // Total net charge, used for the net-charge correction to the strain derivative; the strain
-  // derivative includes the rigid-framework contribution, so the framework charge is included.
-  double netChargeTotal = netChargeFramework;
-  for (double q : netChargePerComponent)
+  // Total net charge is needed only by the net-charge correction to the strain derivative.
+  // The energy correction below uses the per-component charges directly.
+  double netChargeTotalSquared = 0.0;
+  if (computeVirial)
   {
-    netChargeTotal += q;
+    double netChargeTotal = netChargeFramework;
+    for (double q : netChargePerComponent)
+    {
+      netChargeTotal += q;
+    }
+    netChargeTotalSquared = netChargeTotal * netChargeTotal;
   }
-  double netChargeTotalSquared = netChargeTotal * netChargeTotal;
   std::size_t recip_integer_cutoff_squared = forceField.reciprocalIntegerCutOffSquared;
   double recip_cutoff_squared = forceField.reciprocalCutOffSquared;
   double3x3 inv_box = simulationBox.inverseCell;
@@ -1585,7 +1591,7 @@ std::pair<EnergyStatus, double3x3> Interactions::computeEwaldFourierEnergyStrain
   double3 az = double3(inv_box.az, inv_box.bz, inv_box.cz);
 
   EnergyStatus energy(1, framework.has_value() ? 1uz : 0uz, components.size());
-  double3x3 strainDerivative;
+  double3x3 strainDerivative{};
 
   // Finite-cutoff charge methods (Wolf, damped-shifted-force, modified-shifted-force, zero-dipole) have no
   // reciprocal-space contribution. Their real-space inter-molecular pair virial is accumulated in the
@@ -1620,7 +1626,6 @@ std::pair<EnergyStatus, double3x3> Interactions::computeEwaldFourierEnergyStrain
       for (std::size_t m = 0; m != numberOfMoleculesPerComponent[l]; ++m)
       {
         std::span<const Atom> span = std::span(&atomData[index], size);
-        std::span<AtomDynamics> spanDynamics = std::span(&atomDynamics[index], size);
         for (std::size_t i = 0; i + 1 < span.size(); ++i)
         {
           double chargeA = span[i].charge;
@@ -1640,24 +1645,28 @@ std::pair<EnergyStatus, double3x3> Interactions::computeEwaldFourierEnergyStrain
             energy.componentEnergy(l, l).CoulombicFourier +=
                 EnergyDuDlambda(scalingA * scalingB * pairPrefactor * (factors.potential - 1.0 / r), 0.0);
 
-            // The gradient of (V(r) - 1/r) in RASPA's factor convention f = (dU/dr)/r; the bare -1/r term adds
-            // +1/r^3 to the shifted-potential first-derivative factor.
-            double gradientFactor = scalingA * scalingB * pairPrefactor * (factors.firstDerivativeFactor + 1.0 / (rr * r));
-            double3 f = gradientFactor * dr;
-            spanDynamics[i].gradient += f;
-            spanDynamics[j].gradient -= f;
+            if (computeVirial)
+            {
+              // The gradient of (V(r) - 1/r) in RASPA's factor convention f = (dU/dr)/r; the bare -1/r
+              // term adds +1/r^3 to the shifted-potential first-derivative factor.
+              double gradientFactor =
+                  scalingA * scalingB * pairPrefactor * (factors.firstDerivativeFactor + 1.0 / (rr * r));
+              double3 f = gradientFactor * dr;
+              atomDynamics[index + i].gradient += f;
+              atomDynamics[index + j].gradient -= f;
 
-            strainDerivative.ax += f.x * dr.x;
-            strainDerivative.bx += f.y * dr.x;
-            strainDerivative.cx += f.z * dr.x;
+              strainDerivative.ax += f.x * dr.x;
+              strainDerivative.bx += f.y * dr.x;
+              strainDerivative.cx += f.z * dr.x;
 
-            strainDerivative.ay += f.x * dr.y;
-            strainDerivative.by += f.y * dr.y;
-            strainDerivative.cy += f.z * dr.y;
+              strainDerivative.ay += f.x * dr.y;
+              strainDerivative.by += f.y * dr.y;
+              strainDerivative.cy += f.z * dr.y;
 
-            strainDerivative.az += f.x * dr.z;
-            strainDerivative.bz += f.y * dr.z;
-            strainDerivative.cz += f.z * dr.z;
+              strainDerivative.az += f.x * dr.z;
+              strainDerivative.bz += f.y * dr.z;
+              strainDerivative.cz += f.z * dr.z;
+            }
           }
         }
         index += size;
@@ -1722,11 +1731,12 @@ std::pair<EnergyStatus, double3x3> Interactions::computeEwaldFourierEnergyStrain
             std::size_t comp = static_cast<std::size_t>(atomData[i].componentId);
             double charge = atomData[i].charge;
             double scaling = atomData[i].scalingCoulomb;
-            cksum[comp] += scaling * charge * (eik_xy[i] * eikz_temp);
-            test += scaling * charge * (eik_xy[i] * eikz_temp);
+            const std::complex<double> cki = eik_xy[i] * eikz_temp;
+            cksum[comp] += scaling * charge * cki;
+            if (computeVirial) test += scaling * charge * cki;
           }
 
-          test += fixedFrameworkStoredEik[nvec].first;
+          if (computeVirial) test += fixedFrameworkStoredEik[nvec].first;
 
           for (std::size_t i = 0; i != numberOfComponents; ++i)
           {
@@ -1742,37 +1752,40 @@ std::pair<EnergyStatus, double3x3> Interactions::computeEwaldFourierEnergyStrain
             }
           }
 
-          for (std::size_t i = 0; i != numberOfAtoms; ++i)
+          if (computeVirial)
           {
-            std::complex<double> eikz_temp = eik_z[i + numberOfAtoms * static_cast<std::size_t>(std::abs(kz))];
-            eikz_temp.imag(kz >= 0 ? eikz_temp.imag() : -eikz_temp.imag());
-            std::complex<double> cki = eik_xy[i] * eikz_temp;
-            double charge = atomData[i].charge;
-            double scaling = atomData[i].scalingCoulomb;
+            for (std::size_t i = 0; i != numberOfAtoms; ++i)
+            {
+              std::complex<double> eikz_temp = eik_z[i + numberOfAtoms * static_cast<std::size_t>(std::abs(kz))];
+              eikz_temp.imag(kz >= 0 ? eikz_temp.imag() : -eikz_temp.imag());
+              std::complex<double> cki = eik_xy[i] * eikz_temp;
+              double charge = atomData[i].charge;
+              double scaling = atomData[i].scalingCoulomb;
 
-            atomDynamics[i].gradient -= scaling * charge * 2.0 * temp *
-                                        (cki.imag() * test.real() - cki.real() * test.imag()) *
-                                        (kvec_x + kvec_y + kvec_z);
+              atomDynamics[i].gradient -= scaling * charge * 2.0 * temp *
+                                          (cki.imag() * test.real() - cki.real() * test.imag()) * rk;
+            }
+
+            // Include the net-charge correction in the strain derivative: per wave vector its energy
+            // contribution is -temp * Q_total^2, with the same k- and volume-dependence as the
+            // regular Fourier term (the correction's self part, alpha/sqrt(pi), is strain-independent).
+            double currentEnergy =
+                temp * (test.real() * test.real() + test.imag() * test.imag() - netChargeTotalSquared);
+            double fac = 2.0 * (1.0 / rksq + 0.25 / (alpha * alpha)) * currentEnergy;
+            strainDerivative.ax -= currentEnergy - fac * rk.x * rk.x;
+            strainDerivative.bx -= -fac * rk.x * rk.y;
+            strainDerivative.cx -= -fac * rk.x * rk.z;
+
+            strainDerivative.ay -= -fac * rk.y * rk.x;
+            strainDerivative.by -= currentEnergy - fac * rk.y * rk.y;
+            strainDerivative.cy -= -fac * rk.y * rk.z;
+
+            strainDerivative.az -= -fac * rk.z * rk.x;
+            strainDerivative.bz -= -fac * rk.z * rk.y;
+            strainDerivative.cz -= currentEnergy - fac * rk.z * rk.z;
           }
 
           singleIonFourierSum += temp;
-
-          // Include the net-charge correction in the strain derivative: per wave vector its energy
-          // contribution is -temp * Q_total^2, with the same k- and volume-dependence as the
-          // regular Fourier term (the correction's self part, alpha/sqrt(pi), is strain-independent).
-          double currentEnergy = temp * (test.real() * test.real() + test.imag() * test.imag() - netChargeTotalSquared);
-          double fac = 2.0 * (1.0 / rksq + 0.25 / (alpha * alpha)) * currentEnergy;
-          strainDerivative.ax -= currentEnergy - fac * rk.x * rk.x;
-          strainDerivative.bx -= -fac * rk.x * rk.y;
-          strainDerivative.cx -= -fac * rk.x * rk.z;
-
-          strainDerivative.ay -= -fac * rk.y * rk.x;
-          strainDerivative.by -= currentEnergy - fac * rk.y * rk.y;
-          strainDerivative.cy -= -fac * rk.y * rk.z;
-
-          strainDerivative.az -= -fac * rk.z * rk.x;
-          strainDerivative.bz -= -fac * rk.z * rk.y;
-          strainDerivative.cz -= currentEnergy - fac * rk.z * rk.z;
 
           ++nvec;
         }
@@ -1799,7 +1812,6 @@ std::pair<EnergyStatus, double3x3> Interactions::computeEwaldFourierEnergyStrain
     for (std::size_t m = 0; m != numberOfMoleculesPerComponent[l]; ++m)
     {
       std::span<const Atom> span = std::span(&atomData[index], size);
-      std::span<AtomDynamics> spanDynamics = std::span(&atomDynamics[index], size);
       for (std::size_t i = 0; i != span.size() - 1; i++)
       {
         double chargeA = span[i].charge;
@@ -1824,21 +1836,24 @@ std::pair<EnergyStatus, double3x3> Interactions::computeEwaldFourierEnergyStrain
           energy.componentEnergy(l, l).CoulombicFourier -=
               EnergyDuDlambda(scalingA * scalingB * prefactor * exclusion.potential, 0.0);
 
-          double temp = scalingA * scalingB * prefactor * exclusion.firstDerivativeFactor;
-          spanDynamics[i].gradient -= temp * dr;
-          spanDynamics[j].gradient += temp * dr;
+          if (computeVirial)
+          {
+            double temp = scalingA * scalingB * prefactor * exclusion.firstDerivativeFactor;
+            atomDynamics[index + i].gradient -= temp * dr;
+            atomDynamics[index + j].gradient += temp * dr;
 
-          strainDerivative.ax -= temp * dr.x * dr.x;
-          strainDerivative.bx -= temp * dr.y * dr.x;
-          strainDerivative.cx -= temp * dr.z * dr.x;
+            strainDerivative.ax -= temp * dr.x * dr.x;
+            strainDerivative.bx -= temp * dr.y * dr.x;
+            strainDerivative.cx -= temp * dr.z * dr.x;
 
-          strainDerivative.ay -= temp * dr.x * dr.y;
-          strainDerivative.by -= temp * dr.y * dr.y;
-          strainDerivative.cy -= temp * dr.z * dr.y;
+            strainDerivative.ay -= temp * dr.x * dr.y;
+            strainDerivative.by -= temp * dr.y * dr.y;
+            strainDerivative.cy -= temp * dr.z * dr.y;
 
-          strainDerivative.az -= temp * dr.x * dr.z;
-          strainDerivative.bz -= temp * dr.y * dr.z;
-          strainDerivative.cz -= temp * dr.z * dr.z;
+            strainDerivative.az -= temp * dr.x * dr.z;
+            strainDerivative.bz -= temp * dr.y * dr.z;
+            strainDerivative.cz -= temp * dr.z * dr.z;
+          }
         }
       }
       index += size;

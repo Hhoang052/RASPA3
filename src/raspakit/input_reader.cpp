@@ -208,6 +208,32 @@ InputReader::InputReader(const std::string inputFile)
   }
 }
 
+void InputReader::applyComputePressureOverrides(std::span<System> targetSystems) const
+{
+  if (computePressureOverrides.empty() || targetSystems.empty()) return;
+
+  if (computePressureOverrides.size() != 1 && computePressureOverrides.size() != targetSystems.size())
+  {
+    throw std::runtime_error(
+        "[Input reader]: cannot map per-system ComputePressure overrides onto systems restored from restart");
+  }
+
+  for (std::size_t i = 0; i < targetSystems.size(); ++i)
+  {
+    const std::optional<bool>& override =
+        computePressureOverrides.size() == 1 ? computePressureOverrides.front() : computePressureOverrides[i];
+    if (override.has_value()) targetSystems[i].computePressure = override.value();
+    if (!targetSystems[i].computePressure && targetSystems[i].thermobarostat.has_value())
+      throw std::runtime_error(
+          "[Input reader]: ComputePressure=false is incompatible with an MD thermobarostat restored from restart");
+    if (!targetSystems[i].computePressure &&
+        targetSystems[i].propertyElasticConstantsFluctuation.has_value())
+      throw std::runtime_error(
+          "[Input reader]: ComputePressure=false is incompatible with stress-fluctuation elastic constants restored "
+          "from restart");
+  }
+}
+
 void InputReader::parseFitting([[maybe_unused]] const nlohmann::basic_json<nlohmann::raspa_map>& parsed_data) {}
 
 void InputReader::parseMixturePrediction([[maybe_unused]] const nlohmann::basic_json<nlohmann::raspa_map>& parsed_data)
@@ -242,6 +268,7 @@ void InputReader::parseMolecularSimulations(const nlohmann::basic_json<nlohmann:
   }
 
   systems = std::vector<System>(jsonNumberOfSystems);
+  computePressureOverrides.resize(jsonNumberOfSystems);
 
   // Read the local 'force_field.json' if present. This file will be used if no 'ForceField' keyword is specified per
   // system
@@ -1960,6 +1987,15 @@ void InputReader::parseMolecularSimulations(const nlohmann::basic_json<nlohmann:
         hasExternalField = value["ExternalField"].get<bool>();
       }
 
+      if (value.contains("ComputePressure"))
+      {
+        if (!value["ComputePressure"].is_boolean())
+        {
+          throw std::runtime_error("[Input reader]: 'ComputePressure' must have a boolean value");
+        }
+        computePressureOverrides[systemId] = value["ComputePressure"].get<bool>();
+      }
+
       std::optional<SimulationBox> restart_simulation_box{};
       if (value.contains("RestartFileName") && value["RestartFileName"].is_string())
       {
@@ -2134,6 +2170,8 @@ void InputReader::parseMolecularSimulations(const nlohmann::basic_json<nlohmann:
         throw std::runtime_error(
             std::format("[Input reader]: system key 'Type' must have value 'Box' or 'Framework'\n"));
       }
+
+      systems[systemId].computePressure = computePressureOverrides[systemId].value_or(true);
 
       {
         if (value.contains("CellType"))
@@ -2738,6 +2776,18 @@ void InputReader::parseMolecularSimulations(const nlohmann::basic_json<nlohmann:
         }
       }
 
+      if (!systems[systemId].computePressure && systems[systemId].thermobarostat.has_value())
+      {
+        throw std::runtime_error(
+            "[Input reader]: ComputePressure=false is incompatible with an MD thermobarostat");
+      }
+      if (!systems[systemId].computePressure &&
+          systems[systemId].propertyElasticConstantsFluctuation.has_value())
+      {
+        throw std::runtime_error(
+            "[Input reader]: ComputePressure=false is incompatible with stress-fluctuation elastic constants");
+      }
+
       systemId++;
     }
   }
@@ -3210,6 +3260,7 @@ const std::set<std::string, InputReader::InsensitiveCompare> InputReader::system
     "BoxLengths",
     "BoxAngles",
     "ExternalField",
+    "ComputePressure",
     "ComputeEnergyHistogram",
     "SampleEnergyHistogramEvery",
     "WriteEnergyHistogramEvery",

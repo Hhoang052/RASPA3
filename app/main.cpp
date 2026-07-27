@@ -77,6 +77,7 @@ int main(int argc, char* argv[])
         if (inputReader.restartFromBinary)
         {
           readBinaryRestartFile(mc, inputReader.restartFromBinaryFileName);
+          inputReader.applyComputePressureOverrides(mc.systems);
           // the output files are opened in append mode (the header is already in the file), and
           // the interpolation grids are not stored in the restart file and must be rebuilt
           mc.createOutputFiles();
@@ -92,6 +93,7 @@ int main(int argc, char* argv[])
         if (inputReader.restartFromBinary)
         {
           readBinaryRestartFile(mc, inputReader.restartFromBinaryFileName);
+          inputReader.applyComputePressureOverrides(mc.systems);
           // the resumed stage jumps past the header block, so the output streams must exist
           mc.createOutputFiles();
         }
@@ -104,6 +106,7 @@ int main(int argc, char* argv[])
         if (inputReader.restartFromBinary)
         {
           readBinaryRestartFile(md, inputReader.restartFromBinaryFileName);
+          inputReader.applyComputePressureOverrides(md.systems);
           md.createOutputFiles();
           // the grids are not stored in the restart file and must be rebuilt
           md.createInterpolationGrids();
@@ -118,6 +121,7 @@ int main(int argc, char* argv[])
         if (inputReader.restartFromBinary)
         {
           readBinaryRestartFile(minimization, inputReader.restartFromBinaryFileName);
+          inputReader.applyComputePressureOverrides(minimization.systems);
         }
         minimization.run();
         break;
@@ -134,6 +138,7 @@ int main(int argc, char* argv[])
         if (inputReader.restartFromBinary)
         {
           readBinaryRestartFile(parallel_ti, inputReader.restartFromBinaryFileName);
+          inputReader.applyComputePressureOverrides(parallel_ti.systems);
         }
         parallel_ti.run();
         break;
@@ -144,6 +149,7 @@ int main(int argc, char* argv[])
         if (inputReader.restartFromBinary)
         {
           readBinaryRestartFile(parallel_tempering, inputReader.restartFromBinaryFileName);
+          inputReader.applyComputePressureOverrides(parallel_tempering.systems);
         }
         parallel_tempering.run();
         break;
@@ -154,6 +160,7 @@ int main(int argc, char* argv[])
         if (inputReader.restartFromBinary)
         {
           readBinaryRestartFile(hyper_parallel_tempering, inputReader.restartFromBinaryFileName);
+          inputReader.applyComputePressureOverrides(hyper_parallel_tempering.systems);
         }
         hyper_parallel_tempering.run();
         break;
@@ -164,6 +171,7 @@ int main(int argc, char* argv[])
         if (inputReader.restartFromBinary)
         {
           readBinaryRestartFile(reweighted_histogram, inputReader.restartFromBinaryFileName);
+          inputReader.applyComputePressureOverrides(reweighted_histogram.systems);
         }
         reweighted_histogram.run();
         break;
@@ -174,6 +182,7 @@ int main(int argc, char* argv[])
         if (inputReader.restartFromBinary)
         {
           readBinaryRestartFile(parallel_tmmc, inputReader.restartFromBinaryFileName);
+          inputReader.applyComputePressureOverrides(parallel_tmmc.systems);
         }
         parallel_tmmc.run();
         break;

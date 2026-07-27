@@ -12,6 +12,7 @@ import atom;
 import simulationbox;
 import energy_status;
 import energy_status_inter;
+import energy_dudlambda;
 import units;
 import potential_pair_derivatives;
 import running_energy;
@@ -21,11 +22,12 @@ import tricubic_derivatives_external_field;
 import triquintic_derivatives_external_field;
 import interpolation_energy_grid;
 
-void Interactions::computeExternalFieldEnergy(bool hasExternalField, [[maybe_unused]] const ForceField &forceField,
-        [[maybe_unused]] const SimulationBox &simulationBox,
-        [[maybe_unused]] std::span<const Atom> moleculeAtoms,
-        [[maybe_unused]] RunningEnergy &energyStatus,
-        [[maybe_unused]] const std::optional<InterpolationEnergyGrid> &externalFieldInterpolationGrid) noexcept
+void Interactions::computeExternalFieldEnergy(
+    bool hasExternalField, [[maybe_unused]] const ForceField &forceField,
+    [[maybe_unused]] const SimulationBox &simulationBox, [[maybe_unused]] std::span<const Atom> moleculeAtoms,
+    [[maybe_unused]] RunningEnergy &energyStatus,
+    [[maybe_unused]] const std::optional<InterpolationEnergyGrid> &externalFieldInterpolationGrid,
+    EnergyStatus *detailedEnergyStatus) noexcept
 {
   if (hasExternalField)
   {
@@ -194,6 +196,13 @@ void Interactions::computeExternalFieldEnergy(bool hasExternalField, [[maybe_unu
       }
       energyStatus.externalFieldVDW += energyFactor.energy;
       energyStatus.addDudlambdaVDW(groupIdA, 0, 1.0, 1.0, energyFactor.dUdlambda);
+      if (detailedEnergyStatus != nullptr)
+      {
+        // Keep the detailed path consistent with the existing RunningEnergy behavior: the current
+        // external-field implementation reports no dU/dlambda even when scalingVDW multiplies the energy.
+        detailedEnergyStatus->externalFieldComponentEnergy(0, compA).VanDerWaals +=
+            EnergyDuDlambda(energyFactor.energy, 0.0);
+      }
     }
   }
 }

@@ -16,6 +16,7 @@ import forcefield;
 import framework;
 import component;
 import interpolation_energy_grid;
+export import interactions_molecular_property_mode;
 import interactions_pair_kernel;
 
 export namespace Interactions
@@ -187,7 +188,8 @@ RunningEnergy computeFrameworkMoleculeGradient(
     const std::vector<std::optional<InterpolationEnergyGrid>> &interpolationGrids,
     const std::vector<Component> &components, const SimulationBox &simulationBox, std::span<const Atom> frameworkAtoms,
     std::span<const Atom> moleculeAtoms, std::span<AtomDynamics> moleculeDynamics,
-    const PolarizationFieldStrain *polarizationGather = nullptr) noexcept;
+    const PolarizationFieldStrain *polarizationGather = nullptr,
+    MolecularPropertyMode mode = MolecularPropertyMode::EnergyVirialAndPolarizationFieldStrain) noexcept;
 
 /**
  * \brief Computes the electric potential at molecule atom positions due to the framework atoms.

@@ -66,6 +66,7 @@ import interactions_internal;
 import interactions_external_field;
 import interactions_external_field_grid;
 import interactions_polarization_derivatives;
+import interactions_molecular_property_mode;
 import equation_of_states;
 import thermostat;
 import thermobarostat;
@@ -538,11 +539,13 @@ void System::sampleProperties(std::size_t systemId, std::size_t currentBlock, st
                                   runningEnergies.potentialEnergy(), simulationBox.volume);
   averagePartialMolarProperties.addSample(currentBlock, partialMolarTerms, w);
 
-  std::size_t numberOfMolecules =
-      std::accumulate(numberOfIntegerMoleculesPerComponent.begin(), numberOfIntegerMoleculesPerComponent.end(), 0uz);
-  double currentIdealPressure = static_cast<double>(numberOfMolecules) / (beta * simulationBox.volume);
-
-  averagePressure.addSample(currentBlock, currentIdealPressure, currentExcessPressureTensor, w);
+  if (computePressure)
+  {
+    std::size_t numberOfMolecules =
+        std::accumulate(numberOfIntegerMoleculesPerComponent.begin(), numberOfIntegerMoleculesPerComponent.end(), 0uz);
+    double currentIdealPressure = static_cast<double>(numberOfMolecules) / (beta * simulationBox.volume);
+    averagePressure.addSample(currentBlock, currentIdealPressure, currentExcessPressureTensor, w);
+  }
 
   for (std::size_t componentId{0}; Component& component : components)
   {
@@ -852,13 +855,37 @@ void System::computeTotalElectricField() noexcept
                                                  numberOfMoleculesPerComponent, moleculeAtomPositions);
 }
 
+EnergyStatus System::computeMolecularEnergyStatus() noexcept
+{
+  const Interactions::MolecularPropertyMode mode =
+      forceField.computePolarization && forceField.useCharge
+          ? Interactions::MolecularPropertyMode::EnergyAndPolarizationField
+          : Interactions::MolecularPropertyMode::EnergyOnly;
+  return computeMolecularProperties(mode).first;
+}
+
 std::pair<EnergyStatus, double3x3> System::computeMolecularPressure() noexcept
 {
+  return computeMolecularProperties(
+      Interactions::MolecularPropertyMode::EnergyVirialAndPolarizationFieldStrain);
+}
+
+std::pair<EnergyStatus, double3x3> System::computeMolecularPropertiesForSampling() noexcept
+{
+  if (computePressure) return computeMolecularPressure();
+  return {computeMolecularEnergyStatus(), double3x3{}};
+}
+
+std::pair<EnergyStatus, double3x3> System::computeMolecularProperties(
+    Interactions::MolecularPropertyMode mode) noexcept
+{
+  const bool computeVirial = Interactions::computesVirial(mode);
   // Scratch buffer so molecular-pressure sampling does not mutate live MD site gradients.
   // Strain-derivative routines write intermolecular/framework forces here for the atomic-to-molecular
   // virial correction. Intramolecular bonded forces are intentionally omitted (they cancel in the
   // molecular virial) and must not overwrite AtomDynamics used by Velocity-Verlet.
-  std::vector<AtomDynamics> pressureMoleculeDynamics(spanOfMoleculeAtoms().size());
+  std::vector<AtomDynamics> pressureMoleculeDynamics;
+  if (computeVirial) pressureMoleculeDynamics.resize(spanOfMoleculeAtoms().size());
   std::span<AtomDynamics> pressureDynamics(pressureMoleculeDynamics);
 
   const std::span<const Atom> moleculeAtoms = spanOfMoleculeAtoms();
@@ -869,7 +896,10 @@ std::pair<EnergyStatus, double3x3> System::computeMolecularPressure() noexcept
   // and strain tensor happen afterwards in computePolarizationMolecularPressureStrain. The polarization
   // forces are intentionally kept out of 'pressureDynamics': the polarization strain below already uses
   // COM arms, so it must not participate in the atomic-to-molecular virial correction.
-  const bool gatherPolarization = forceField.computePolarization && forceField.useCharge && !moleculeAtoms.empty();
+  const bool gatherPolarization = forceField.computePolarization && forceField.useCharge && !moleculeAtoms.empty() &&
+                                  Interactions::gathersPolarizationField(mode);
+  const bool gatherPolarizationStrain =
+      gatherPolarization && Interactions::gathersPolarizationFieldStrain(mode);
   std::vector<double3> polarizationField;
   std::vector<std::array<double3, 9>> polarizationFieldStrain;
   std::vector<double3> polarizationComOffset;
@@ -880,8 +910,6 @@ std::pair<EnergyStatus, double3x3> System::computeMolecularPressure() noexcept
   if (gatherPolarization)
   {
     polarizationField.assign(moleculeAtoms.size(), double3(0.0, 0.0, 0.0));
-    polarizationFieldStrain.assign(moleculeAtoms.size(), {});
-    polarizationComOffset.assign(moleculeAtoms.size(), double3(0.0, 0.0, 0.0));
     polarizationPolarizability.resize(moleculeAtoms.size());
     for (std::size_t i = 0; i < moleculeAtoms.size(); ++i)
     {
@@ -892,23 +920,29 @@ std::pair<EnergyStatus, double3x3> System::computeMolecularPressure() noexcept
           Units::CoulombicConversionFactor;
     }
 
-    // Mass-weighted COM offsets from the current atom positions for every molecule (rigid and flexible),
-    // matching the COM-scaling volume move.
-    for (const Molecule& molecule : moleculeData)
+    if (gatherPolarizationStrain)
     {
-      double totalMass = 0.0;
-      double3 com(0.0, 0.0, 0.0);
-      for (std::size_t k = 0; k < molecule.numberOfAtoms; ++k)
+      polarizationFieldStrain.assign(moleculeAtoms.size(), {});
+      polarizationComOffset.assign(moleculeAtoms.size(), double3(0.0, 0.0, 0.0));
+
+      // Mass-weighted COM offsets from the current atom positions for every molecule (rigid and flexible),
+      // matching the COM-scaling volume move.
+      for (const Molecule& molecule : moleculeData)
       {
-        const Atom& atom = moleculeAtoms[molecule.atomIndex + k];
-        const double mass = forceField.pseudoAtoms[static_cast<std::size_t>(atom.type)].mass;
-        com += mass * atom.position;
-        totalMass += mass;
-      }
-      com = com / totalMass;
-      for (std::size_t k = 0; k < molecule.numberOfAtoms; ++k)
-      {
-        polarizationComOffset[molecule.atomIndex + k] = moleculeAtoms[molecule.atomIndex + k].position - com;
+        double totalMass = 0.0;
+        double3 com(0.0, 0.0, 0.0);
+        for (std::size_t k = 0; k < molecule.numberOfAtoms; ++k)
+        {
+          const Atom& atom = moleculeAtoms[molecule.atomIndex + k];
+          const double mass = forceField.pseudoAtoms[static_cast<std::size_t>(atom.type)].mass;
+          com += mass * atom.position;
+          totalMass += mass;
+        }
+        com = com / totalMass;
+        for (std::size_t k = 0; k < molecule.numberOfAtoms; ++k)
+        {
+          polarizationComOffset[molecule.atomIndex + k] = moleculeAtoms[molecule.atomIndex + k].position - com;
+        }
       }
     }
 
@@ -924,22 +958,46 @@ std::pair<EnergyStatus, double3x3> System::computeMolecularPressure() noexcept
 
   std::pair<EnergyStatus, double3x3> pressureInfo = Interactions::computeFrameworkMoleculeEnergyStrainDerivative(
       forceField, framework, interpolationGrids, components, simulationBox, spanOfFrameworkAtoms(),
-      spanOfMoleculeAtoms(), pressureDynamics, frameworkGather);
+      spanOfMoleculeAtoms(), pressureDynamics, frameworkGather, mode);
 
   pressureInfo.first.translationalKineticEnergy = runningEnergies.translationalKineticEnergy;
   pressureInfo.first.rotationalKineticEnergy = runningEnergies.rotationalKineticEnergy;
   pressureInfo.first.noseHooverEnergy = runningEnergies.NoseHooverEnergy;
 
-  pressureInfo = pairSum(pressureInfo,
-                         Interactions::computeInterMolecularEnergyStrainDerivative(
-                             forceField, components, simulationBox, spanOfMoleculeAtoms(), pressureDynamics,
-                             interGather));
+  const auto accumulateMolecularProperties =
+      [&](std::pair<EnergyStatus, double3x3>&& contribution)
+  {
+    pressureInfo.first += contribution.first;
+    if (computeVirial) pressureInfo.second += contribution.second;
+  };
 
-  pressureInfo = pairSum(pressureInfo,
-                         Interactions::computeEwaldFourierEnergyStrainDerivative(
-                             eik_x, eik_y, eik_z, eik_xy, fixedFrameworkStoredEik, storedEik, forceField, simulationBox,
-                             framework, components, numberOfMoleculesPerComponent, spanOfMoleculeAtoms(),
-                             pressureDynamics, netChargeFramework, netChargePerComponent));
+  accumulateMolecularProperties(Interactions::computeInterMolecularEnergyStrainDerivative(
+      forceField, components, simulationBox, spanOfMoleculeAtoms(), pressureDynamics, interGather, mode));
+
+  // Pressure sampling historically uses the live Ewald workspaces.  The energy-only path instead uses
+  // disposable workspaces so property sampling cannot alter the Ewald tables used by subsequent MC moves.
+  // The fixed-framework structure factors are inputs and therefore have to be copied; the remaining arrays
+  // are rebuilt from the current atom positions by the Ewald routine.
+  std::vector<std::complex<double>> scratchEikX;
+  std::vector<std::complex<double>> scratchEikY;
+  std::vector<std::complex<double>> scratchEikZ;
+  std::vector<std::complex<double>> scratchEikXY;
+  std::vector<std::pair<std::complex<double>, std::array<std::complex<double>, 4>>> scratchFixedFrameworkStoredEik;
+  std::vector<std::pair<std::complex<double>, std::array<std::complex<double>, 4>>> scratchStoredEik;
+
+  std::vector<std::complex<double>>& propertyEikX = computeVirial ? eik_x : scratchEikX;
+  std::vector<std::complex<double>>& propertyEikY = computeVirial ? eik_y : scratchEikY;
+  std::vector<std::complex<double>>& propertyEikZ = computeVirial ? eik_z : scratchEikZ;
+  std::vector<std::complex<double>>& propertyEikXY = computeVirial ? eik_xy : scratchEikXY;
+  if (!computeVirial) scratchFixedFrameworkStoredEik = fixedFrameworkStoredEik;
+  auto& propertyFixedFrameworkStoredEik =
+      computeVirial ? fixedFrameworkStoredEik : scratchFixedFrameworkStoredEik;
+  auto& propertyStoredEik = computeVirial ? storedEik : scratchStoredEik;
+
+  accumulateMolecularProperties(Interactions::computeEwaldFourierEnergyStrainDerivative(
+      propertyEikX, propertyEikY, propertyEikZ, propertyEikXY, propertyFixedFrameworkStoredEik, propertyStoredEik,
+      forceField, simulationBox, framework, components, numberOfMoleculesPerComponent, spanOfMoleculeAtoms(),
+      pressureDynamics, netChargeFramework, netChargePerComponent, mode));
 
   std::size_t molecule_index = 0;
   for (std::size_t i = 0; i < components.size(); ++i)
@@ -981,13 +1039,24 @@ std::pair<EnergyStatus, double3x3> System::computeMolecularPressure() noexcept
     // into the polarization energy and its (unsymmetrized) strain-derivative tensor; the symmetrization at
     // the end of this function averages the off-diagonal pairs, matching the symmetric strain generators.
     const auto [polarizationEnergy, polarizationStrain] = Interactions::computePolarizationMolecularPressureStrain(
-        *this, polarizationField, polarizationFieldStrain, polarizationComOffset, polarizationPolarizability);
+        *this, polarizationField, polarizationFieldStrain, polarizationComOffset, polarizationPolarizability, mode);
 
     pressureInfo.first.polarizationEnergy = EnergyDuDlambda(polarizationEnergy, 0.0);
-    pressureInfo.second += polarizationStrain;
+    if (computeVirial) pressureInfo.second += polarizationStrain;
   }
 
+  RunningEnergy externalFieldEnergy{};
+  Interactions::computeExternalFieldEnergy(hasExternalField, forceField, simulationBox, moleculeAtoms,
+                                           externalFieldEnergy, externalFieldInterpolationGrid,
+                                           &pressureInfo.first);
+
   pressureInfo.first.sumTotal();
+
+  if (!computeVirial)
+  {
+    pressureInfo.second = double3x3{};
+    return pressureInfo;
+  }
 
   double pressureTailCorrection = 0.0;
   // Tail correction to the (excess) pressure virial. The per-pair integral 'tailCorrectionPressure' equals
@@ -1299,6 +1368,7 @@ Archive<std::ofstream>& operator<<(Archive<std::ofstream>& archive, const System
 
   archive << s.forceField;
   archive << s.hasExternalField;
+  archive << s.computePressure;
 
   archive << s.numberOfPseudoAtoms;
   archive << s.totalNumberOfPseudoAtoms;
@@ -1459,6 +1529,14 @@ Archive<std::ifstream>& operator>>(Archive<std::ifstream>& archive, System& s)
 
   archive >> s.forceField;
   archive >> s.hasExternalField;
+  if (versionNumber >= 2)
+  {
+    archive >> s.computePressure;
+  }
+  else
+  {
+    s.computePressure = true;
+  }
 
   archive >> s.numberOfPseudoAtoms;
   archive >> s.totalNumberOfPseudoAtoms;
