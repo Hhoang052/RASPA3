@@ -649,8 +649,10 @@ void MonteCarlo::equilibrate(std::function<void()> call_back_function, std::size
   {
     system.runningEnergies = system.computeTotalEnergies();
 
-    for (std::size_t componentId = 0; Component& component : system.components)
+    for (std::size_t componentId = 0; componentId < system.components.size(); ++componentId)
     {
+      Component& component = system.components[componentId];
+
       if (system.gcLambdaAdaptiveBiasEnabled(componentId))
       {
         component.lambdaGC.WangLandauIteration(PropertyLambdaProbabilityHistogram::WangLandauPhase::Initialize,

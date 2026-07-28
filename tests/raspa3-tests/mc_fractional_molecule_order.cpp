@@ -213,4 +213,35 @@ TEST(MC_FRACTIONAL_MOLECULE_ORDER, swap_and_gibbs_swap_layout)
   expectFractionalBeforeInteger(system);
 }
 
+TEST(MC_FRACTIONAL_MOLECULE_ORDER, initializes_active_lambda_after_inactive_component)
+{
+  const ForceField forceField = makeAlkaneForceField();
+  SimulationBox box = SimulationBox(30.0, 30.0, 30.0);
+
+  MCMoveProbabilities inactiveProbabilities = MCMoveProbabilities();
+  inactiveProbabilities.setProbability(Move::Types::Translation, 1.0);
+
+  MCMoveProbabilities activeProbabilities = MCMoveProbabilities();
+  activeProbabilities.setProbability(Move::Types::SwapCFCMC, 1.0);
+
+  Component inactive = makeAlkaneFromExample(forceField, 0, "propane", inactiveProbabilities);
+  Component active = makeAlkaneFromExample(forceField, 1, "butane", activeProbabilities);
+  active.lnPartitionFunction = 1.0;
+
+  System system = System(forceField, box, false, 500.0, 1e4, 1.0, {}, {inactive, active}, {},
+                         std::vector<std::size_t>{0, 0}, 5, MCMoveProbabilities());
+
+  ASSERT_FALSE(system.gcLambdaAdaptiveBiasEnabled(0));
+  ASSERT_TRUE(system.gcLambdaAdaptiveBiasEnabled(1));
+  ASSERT_DOUBLE_EQ(system.components[0].lambdaGC.WangLandauScalingFactor, 1.0);
+  ASSERT_DOUBLE_EQ(system.components[1].lambdaGC.WangLandauScalingFactor, 1.0);
+
+  MonteCarlo mc = MonteCarlo({0, 0, 0, 0, 100, 10000, 5000, 5000}, {std::move(system)}, 42uz, 5, false);
+  mc.setup();
+  mc.equilibrate();
+
+  EXPECT_DOUBLE_EQ(mc.systems[0].components[0].lambdaGC.WangLandauScalingFactor, 1.0);
+  EXPECT_DOUBLE_EQ(mc.systems[0].components[1].lambdaGC.WangLandauScalingFactor, 0.01);
+}
+
 }  // namespace
