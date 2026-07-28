@@ -813,6 +813,8 @@ void MonteCarlo::equilibrate(std::function<void()> call_back_function, std::size
 
 void MonteCarlo::production(std::function<void()> call_back_function, std::size_t callBackEvery)
 {
+  std::vector<std::vector<bool>> gcNormalized;
+  std::size_t maximumComponents = 0;
   std::chrono::steady_clock::time_point t1, t2;
 
   if (simulationStage == SimulationStage::Production) goto continueProductionStage;
@@ -842,7 +844,6 @@ void MonteCarlo::production(std::function<void()> call_back_function, std::size_
         component.lambdaGibbs.clear();
       }
       ++componentId;
-      ++componentId;
     }
 
     system.pairSwapLambdaWangLandauIteration(PropertyLambdaProbabilityHistogram::WangLandauPhase::Finalize);
@@ -855,14 +856,12 @@ void MonteCarlo::production(std::function<void()> call_back_function, std::size_
   // Normalize independent GC coordinates independently. Serial Gibbs coordinates share an
   // additive constant across boxes because their transfer acceptance contains inter-box bias
   // differences. Conventional-Gibbs lambda coordinates follow the same shared-family rule.
-  std::vector<std::vector<bool>> gcNormalized;
   gcNormalized.reserve(systems.size());
   for (const System& system : systems)
   {
     gcNormalized.emplace_back(system.components.size(), false);
   }
 
-  std::size_t maximumComponents = 0;
   for (const System& system : systems)
   {
     maximumComponents = std::max(maximumComponents, system.components.size());
