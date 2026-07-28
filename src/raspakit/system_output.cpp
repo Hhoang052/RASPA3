@@ -160,6 +160,13 @@ std::string System::writeInitializationStatusReport(std::size_t currentCycle, st
 
   for (std::size_t componentId{0}; const Component& c : components)
   {
+    if (!c.hasFractionalMolecule)
+    {
+      std::print(stream, "component {:3d} ({}) lambda: inactive\n", componentId, c.name);
+      std::print(stream, "    net charge: {:12.8f} [e]\n", netChargePerComponent[componentId]);
+      ++componentId;
+      continue;
+    }
     double occupancy = static_cast<double>(containsTheFractionalMolecule);
     // a fixed lambda-bin (thermodynamic integration at constant lambda) may pin the pair- or
     // group-swap lambda instead of the grand-canonical one; report the pinned coordinate
@@ -239,6 +246,13 @@ std::string System::writeEquilibrationStatusReportMC(std::size_t currentCycle, s
 
   for (std::size_t componentId = 0; const Component& c : components)
   {
+    if (!c.hasFractionalMolecule)
+    {
+      std::print(stream, "component {} ({}) lambda: inactive\n", componentId, c.name);
+      std::print(stream, "    net charge: {:12.8f} [e]\n", netChargePerComponent[componentId]);
+      ++componentId;
+      continue;
+    }
     double occupancy = static_cast<double>(containsTheFractionalMolecule);
     // a fixed lambda-bin (thermodynamic integration at constant lambda) may pin the pair- or
     // group-swap lambda instead of the grand-canonical one; report the pinned coordinate
@@ -365,6 +379,13 @@ std::string System::writeEquilibrationStatusReportMD(std::size_t currentCycle, s
 
   for (std::size_t componentId{0}; const Component& c : components)
   {
+    if (!c.hasFractionalMolecule)
+    {
+      std::print(stream, "component {} ({}) lambda: inactive\n", componentId, c.name);
+      std::print(stream, "    net charge: {:12.8f} [e]\n", netChargePerComponent[componentId]);
+      ++componentId;
+      continue;
+    }
     double occupancy = static_cast<double>(containsTheFractionalMolecule);
     // a fixed lambda-bin (thermodynamic integration at constant lambda) may pin the pair- or
     // group-swap lambda instead of the grand-canonical one; report the pinned coordinate
@@ -442,6 +463,13 @@ std::string System::writeProductionStatusReportMC(const std::string& statusLine)
 
   for (std::size_t componentId{0}; const Component& c : components)
   {
+    if (!c.hasFractionalMolecule)
+    {
+      std::print(stream, "component {} ({}) lambda: inactive\n", componentId, c.name);
+      std::print(stream, "    net charge: {:12.8f} [e]\n", netChargePerComponent[componentId]);
+      ++componentId;
+      continue;
+    }
     double occupancy = static_cast<double>(containsTheFractionalMolecule);
     // a fixed lambda-bin (thermodynamic integration at constant lambda) may pin the pair- or
     // group-swap lambda instead of the grand-canonical one; report the pinned coordinate
@@ -750,6 +778,13 @@ std::string System::writeProductionStatusReportMD(std::size_t currentCycle, std:
   std::print(stream, "\n");
   for (std::size_t componentId = 0; const Component& c : components)
   {
+    if (!c.hasFractionalMolecule)
+    {
+      std::print(stream, "component {} ({}) lambda: inactive\n", componentId, c.name);
+      std::print(stream, "    net charge: {:12.8f} [e]\n", netChargePerComponent[componentId]);
+      ++componentId;
+      continue;
+    }
     double occupancy = static_cast<double>(containsTheFractionalMolecule);
     // a fixed lambda-bin (thermodynamic integration at constant lambda) may pin the pair- or
     // group-swap lambda instead of the grand-canonical one; report the pinned coordinate
@@ -984,6 +1019,10 @@ std::string System::writeMCMoveStatistics() const
   {
     for (const Reaction& reaction : reactions.list)
     {
+      if (!reaction.isSerialRxCFC() && !reaction.isParallelRxCFC())
+      {
+        continue;
+      }
       if (reaction.isSerialRxCFC())
       {
         std::print(stream, "reaction {} lambda statistics (reactant side, occupancy {:.6f}):\n", reaction.id,

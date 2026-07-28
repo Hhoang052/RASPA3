@@ -15,6 +15,7 @@ add_executable(unit_tests_raspakit
   insertion_deletion.cpp
   mc.cpp
   pressure.cpp
+  weighted_averages.cpp
   static_energy.cpp
   component_explicit_intra_pairs.cpp
   forcefield_options.cpp

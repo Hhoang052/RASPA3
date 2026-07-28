@@ -538,22 +538,19 @@ void System::sampleProperties(std::size_t systemId, std::size_t currentBlock, st
                                   runningEnergies.potentialEnergy(), simulationBox.volume);
   averagePartialMolarProperties.addSample(currentBlock, partialMolarTerms, w);
 
-  std::size_t numberOfMolecules =
-      std::accumulate(numberOfIntegerMoleculesPerComponent.begin(), numberOfIntegerMoleculesPerComponent.end(), 0uz);
-  double currentIdealPressure = static_cast<double>(numberOfMolecules) / (beta * simulationBox.volume);
-
-  averagePressure.addSample(currentBlock, currentIdealPressure, currentExcessPressureTensor, w);
-
   for (std::size_t componentId{0}; Component& component : components)
   {
     double componentDensity =
         static_cast<double>(numberOfIntegerMoleculesPerComponent[componentId]) / simulationBox.volume;
 
-    double lambda = component.lambdaGC.lambdaValue();
-    double dudlambda = currentDUdlambda(lambda, component.lambdaGC.dUdlambdaGroupId);
-    component.lambdaGC.sampleHistogram(currentBlock, componentDensity, dudlambda, containsTheFractionalMolecule, w);
+    if (gcLambdaActive(componentId))
+    {
+      const double lambda = component.lambdaGC.lambdaValue();
+      const double dudlambda = currentDUdlambda(lambda, component.lambdaGC.dUdlambdaGroupId);
+      component.lambdaGC.sampleHistogram(currentBlock, componentDensity, dudlambda, containsTheFractionalMolecule, w);
+    }
 
-    if (usesGibbsConventionalCFCMC())
+    if (gibbsLambdaActive(componentId))
     {
       const double gibbsLambda = component.lambdaGibbs.lambdaValue();
       const double gibbsDudlambda = currentDUdlambda(gibbsLambda, component.lambdaGibbs.dUdlambdaGroupId);
@@ -655,6 +652,18 @@ void System::sampleProperties(std::size_t systemId, std::size_t currentBlock, st
   std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
 
   mc_moves_cputime.propertySampling += (t2 - t1);
+}
+
+void System::sampleEnergyAndPressure(std::size_t currentBlock, const EnergyStatus& energy,
+                                     const double3x3& excessPressureTensor)
+{
+  const double w = weight();
+  averageEnergies.addSample(currentBlock, energy, w);
+
+  const std::size_t numberOfMolecules =
+      std::accumulate(numberOfIntegerMoleculesPerComponent.begin(), numberOfIntegerMoleculesPerComponent.end(), 0uz);
+  const double idealPressure = static_cast<double>(numberOfMolecules) / (beta * simulationBox.volume);
+  averagePressure.addSample(currentBlock, idealPressure, excessPressureTensor, w);
 }
 
 void System::samplePropertiesEvolution(std::size_t absoluteCurrentCycle)

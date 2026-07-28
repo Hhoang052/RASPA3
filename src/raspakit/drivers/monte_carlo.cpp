@@ -126,16 +126,29 @@ continueProductionStage:
 void MonteCarlo::setup()
 {
   // this case only happens at first run, not when using a binary-restart file
+  const auto serialGibbsSystem = std::ranges::find_if(systems, [](const System& system)
+  {
+    return std::ranges::any_of(system.numberOfGibbsSwapFractionalMoleculesPerComponent_CFCMC,
+                               [](std::size_t count) { return count > 0; });
+  });
+  const std::size_t firstSerialGibbsSystem =
+      serialGibbsSystem == systems.end()
+          ? systems.size()
+          : static_cast<std::size_t>(std::distance(systems.begin(), serialGibbsSystem));
+
   for (std::size_t system_id{0}; System& system : systems)
   {
     system.forceField.initializeAutomaticCutOff(system.simulationBox);
     system.forceField.initializeEwaldParameters(system.simulationBox);
 
-    // switch the fractional molecule on in the first system, and off in all others (serial Gibbs CFCMC)
-    if (system.usesGibbsConventionalCFCMC() || system_id == 0uz)
-      system.containsTheFractionalMolecule = true;
-    else
-      system.containsTheFractionalMolecule = false;
+    // A serial Gibbs lambda has one fractional molecule shared by all boxes, initially in box zero.
+    // Other allocated coordinates own their fractional slots locally. Ordinary simulations without
+    // any lambda coordinate must never masquerade as containing a fractional molecule.
+    const bool participatesInSerialGibbs =
+        std::ranges::any_of(system.numberOfGibbsSwapFractionalMoleculesPerComponent_CFCMC,
+                            [](std::size_t count) { return count > 0; });
+    system.containsTheFractionalMolecule =
+        participatesInSerialGibbs ? system_id == firstSerialGibbsSystem : system.hasAnyActiveLambdaCoordinate();
 
     // inactive fractional molecules must not contribute dUdlambda: set their groupId to zero
     system.initializeGibbsSwapFractionalMoleculeGroupIds();
@@ -328,28 +341,40 @@ void MonteCarlo::performCycle()
         MC_Moves::performRandomMoveEquilibration(random, selectedSystem, selectedSecondSystem, selectedComponent,
                                                  fractionalMoleculeSystem);
 
-        selectedSystem.components[selectedComponent].lambdaGC.WangLandauIteration(
-            PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample, selectedSystem.containsTheFractionalMolecule);
-
-        selectedSecondSystem.components[selectedComponent].lambdaGC.WangLandauIteration(
-            PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample,
-            selectedSecondSystem.containsTheFractionalMolecule);
-
-        if (selectedSystem.usesGibbsConventionalCFCMC())
+        if (selectedSystem.gcLambdaAdaptiveBiasEnabled(selectedComponent))
+        {
+          selectedSystem.components[selectedComponent].lambdaGC.WangLandauIteration(
+              PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample,
+              selectedSystem.containsTheFractionalMolecule);
+        }
+        if (selectedSystem.gibbsLambdaActive(selectedComponent))
         {
           selectedSystem.components[selectedComponent].lambdaGibbs.WangLandauIteration(
               PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample, true);
+        }
+        if (selectedSystemPair.second != selectedSystemPair.first &&
+            selectedSecondSystem.gcLambdaAdaptiveBiasEnabled(selectedComponent))
+        {
+          selectedSecondSystem.components[selectedComponent].lambdaGC.WangLandauIteration(
+              PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample,
+              selectedSecondSystem.containsTheFractionalMolecule);
+        }
+        if (selectedSystemPair.second != selectedSystemPair.first &&
+            selectedSecondSystem.gibbsLambdaActive(selectedComponent))
+        {
           selectedSecondSystem.components[selectedComponent].lambdaGibbs.WangLandauIteration(
               PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample, true);
         }
 
         selectedSystem.pairSwapLambdaWangLandauIteration(PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample);
-        selectedSecondSystem.pairSwapLambdaWangLandauIteration(
-            PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample);
-
         selectedSystem.reactionLambdaWangLandauIteration(PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample);
-        selectedSecondSystem.reactionLambdaWangLandauIteration(
-            PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample);
+        if (selectedSystemPair.second != selectedSystemPair.first)
+        {
+          selectedSecondSystem.pairSwapLambdaWangLandauIteration(
+              PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample);
+          selectedSecondSystem.reactionLambdaWangLandauIteration(
+              PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample);
+        }
         break;
       case SimulationStage::Production:
         MC_Moves::performRandomMoveProduction(random, selectedSystem, selectedSecondSystem, selectedComponent,
@@ -358,18 +383,31 @@ void MonteCarlo::performCycle()
         break;
     }
 
-    selectedSystem.components[selectedComponent].lambdaGC.sampleOccupancy(selectedSystem.containsTheFractionalMolecule);
-    selectedSecondSystem.components[selectedComponent].lambdaGC.sampleOccupancy(
-        selectedSecondSystem.containsTheFractionalMolecule);
-    if (selectedSystem.usesGibbsConventionalCFCMC())
+    if (selectedSystem.gcLambdaActive(selectedComponent))
+    {
+      selectedSystem.components[selectedComponent].lambdaGC.sampleOccupancy(
+          selectedSystem.containsTheFractionalMolecule);
+    }
+    if (selectedSystem.gibbsLambdaActive(selectedComponent))
     {
       selectedSystem.components[selectedComponent].lambdaGibbs.sampleOccupancy(true);
-      selectedSecondSystem.components[selectedComponent].lambdaGibbs.sampleOccupancy(true);
     }
     selectedSystem.pairSwapLambdaSampleOccupancy();
-    selectedSecondSystem.pairSwapLambdaSampleOccupancy();
     selectedSystem.reactionLambdaSampleOccupancy();
-    selectedSecondSystem.reactionLambdaSampleOccupancy();
+    if (selectedSystemPair.second != selectedSystemPair.first)
+    {
+      if (selectedSecondSystem.gcLambdaActive(selectedComponent))
+      {
+        selectedSecondSystem.components[selectedComponent].lambdaGC.sampleOccupancy(
+            selectedSecondSystem.containsTheFractionalMolecule);
+      }
+      if (selectedSecondSystem.gibbsLambdaActive(selectedComponent))
+      {
+        selectedSecondSystem.components[selectedComponent].lambdaGibbs.sampleOccupancy(true);
+      }
+      selectedSecondSystem.pairSwapLambdaSampleOccupancy();
+      selectedSecondSystem.reactionLambdaSampleOccupancy();
+    }
   }
 }
 
@@ -611,12 +649,15 @@ void MonteCarlo::equilibrate(std::function<void()> call_back_function, std::size
   {
     system.runningEnergies = system.computeTotalEnergies();
 
-    for (Component& component : system.components)
+    for (std::size_t componentId = 0; Component& component : system.components)
     {
-      component.lambdaGC.WangLandauIteration(PropertyLambdaProbabilityHistogram::WangLandauPhase::Initialize,
-                                             system.containsTheFractionalMolecule);
-      component.lambdaGC.clear();
-      if (system.usesGibbsConventionalCFCMC())
+      if (system.gcLambdaAdaptiveBiasEnabled(componentId))
+      {
+        component.lambdaGC.WangLandauIteration(PropertyLambdaProbabilityHistogram::WangLandauPhase::Initialize,
+                                               system.containsTheFractionalMolecule);
+        component.lambdaGC.clear();
+      }
+      if (system.gibbsLambdaActive(componentId))
       {
         component.lambdaGibbs.WangLandauIteration(PropertyLambdaProbabilityHistogram::WangLandauPhase::Initialize,
                                                   true);
@@ -680,16 +721,20 @@ void MonteCarlo::equilibrate(std::function<void()> call_back_function, std::size
     {
       for (std::size_t system_id{0}; System& system : systems)
       {
-        for (Component& component : system.components)
+        for (std::size_t componentId = 0; Component& component : system.components)
         {
-          component.lambdaGC.WangLandauIteration(
-              PropertyLambdaProbabilityHistogram::WangLandauPhase::AdjustBiasingFactors,
-              system.containsTheFractionalMolecule);
-          if (system.usesGibbsConventionalCFCMC())
+          if (system.gcLambdaAdaptiveBiasEnabled(componentId))
+          {
+            component.lambdaGC.WangLandauIteration(
+                PropertyLambdaProbabilityHistogram::WangLandauPhase::AdjustBiasingFactors,
+                system.containsTheFractionalMolecule);
+          }
+          if (system.gibbsLambdaActive(componentId))
           {
             component.lambdaGibbs.WangLandauIteration(
                 PropertyLambdaProbabilityHistogram::WangLandauPhase::AdjustBiasingFactors, true);
           }
+          ++componentId;
         }
 
         system.pairSwapLambdaWangLandauIteration(
@@ -701,15 +746,19 @@ void MonteCarlo::equilibrate(std::function<void()> call_back_function, std::size
         if (outputToFiles)
         {
           std::filesystem::create_directories("bias_factors");
-          for (Component& component : system.components)
+          for (std::size_t componentId = 0; Component& component : system.components)
           {
-            component.lambdaGC.writeBiasingFile(
-                std::format("bias_factors/lambda_bias_{}.s{}.json", component.name, system_id));
-            if (system.usesGibbsConventionalCFCMC())
+            if (system.gcLambdaAdaptiveBiasEnabled(componentId))
+            {
+              component.lambdaGC.writeBiasingFile(
+                  std::format("bias_factors/lambda_bias_{}.s{}.json", component.name, system_id));
+            }
+            if (system.gibbsLambdaActive(componentId))
             {
               component.lambdaGibbs.writeBiasingFile(
                   std::format("bias_factors/lambda_gibbs_bias_{}.s{}.json", component.name, system_id));
             }
+            ++componentId;
           }
           system.pairSwapLambdaWriteBiasingFiles(system_id);
           for (Reaction& reaction : system.reactions.list)
@@ -764,7 +813,6 @@ void MonteCarlo::equilibrate(std::function<void()> call_back_function, std::size
 
 void MonteCarlo::production(std::function<void()> call_back_function, std::size_t callBackEvery)
 {
-  double minBias{0uz};
   std::chrono::steady_clock::time_point t1, t2;
 
   if (simulationStage == SimulationStage::Production) goto continueProductionStage;
@@ -777,19 +825,24 @@ void MonteCarlo::production(std::function<void()> call_back_function, std::size_
     system.mc_moves_statistics.clearMoveStatistics();
     system.mc_moves_cputime.clearTimingStatistics();
 
-    for (Component& component : system.components)
+    for (std::size_t componentId = 0; Component& component : system.components)
     {
       component.mc_moves_statistics.clearMoveStatistics();
       component.mc_moves_cputime.clearTimingStatistics();
 
-      component.lambdaGC.WangLandauIteration(PropertyLambdaProbabilityHistogram::WangLandauPhase::Finalize,
-                                             system.containsTheFractionalMolecule);
-      component.lambdaGC.clear();
-      if (system.usesGibbsConventionalCFCMC())
+      if (system.gcLambdaAdaptiveBiasEnabled(componentId))
+      {
+        component.lambdaGC.WangLandauIteration(PropertyLambdaProbabilityHistogram::WangLandauPhase::Finalize,
+                                               system.containsTheFractionalMolecule);
+        component.lambdaGC.clear();
+      }
+      if (system.gibbsLambdaActive(componentId))
       {
         component.lambdaGibbs.WangLandauIteration(PropertyLambdaProbabilityHistogram::WangLandauPhase::Finalize, true);
         component.lambdaGibbs.clear();
       }
+      ++componentId;
+      ++componentId;
     }
 
     system.pairSwapLambdaWangLandauIteration(PropertyLambdaProbabilityHistogram::WangLandauPhase::Finalize);
@@ -799,49 +852,76 @@ void MonteCarlo::production(std::function<void()> call_back_function, std::size_
     system.reactionLambdaClearBookkeeping();
   };
 
-  minBias = std::numeric_limits<double>::max();
-  for (System& system : systems)
+  // Normalize independent GC coordinates independently. Serial Gibbs coordinates share an
+  // additive constant across boxes because their transfer acceptance contains inter-box bias
+  // differences. Conventional-Gibbs lambda coordinates follow the same shared-family rule.
+  std::vector<std::vector<bool>> gcNormalized;
+  gcNormalized.reserve(systems.size());
+  for (const System& system : systems)
   {
-    for (Component& component : system.components)
+    gcNormalized.emplace_back(system.components.size(), false);
+  }
+
+  std::size_t maximumComponents = 0;
+  for (const System& system : systems)
+  {
+    maximumComponents = std::max(maximumComponents, system.components.size());
+  }
+
+  for (std::size_t componentId = 0; componentId < maximumComponents; ++componentId)
+  {
+    std::vector<std::size_t> familySystems;
+    double sharedMinimum = std::numeric_limits<double>::max();
+    for (std::size_t systemId = 0; systemId < systems.size(); ++systemId)
     {
-      double currentMinBias =
-          *std::min_element(component.lambdaGC.biasFactor.cbegin(), component.lambdaGC.biasFactor.cend());
-      minBias = currentMinBias < minBias ? currentMinBias : minBias;
-      if (system.usesGibbsConventionalCFCMC())
+      const System& system = systems[systemId];
+      if (componentId >= system.components.size() ||
+          system.numberOfGibbsSwapFractionalMoleculesPerComponent_CFCMC[componentId] == 0)
       {
-        const double gibbsMinBias =
-            *std::min_element(component.lambdaGibbs.biasFactor.cbegin(), component.lambdaGibbs.biasFactor.cend());
-        minBias = gibbsMinBias < minBias ? gibbsMinBias : minBias;
+        continue;
       }
+      familySystems.push_back(systemId);
+      sharedMinimum = std::min(
+          sharedMinimum, *std::ranges::min_element(system.components[componentId].lambdaGC.biasFactor));
+    }
+    for (std::size_t systemId : familySystems)
+    {
+      systems[systemId].components[componentId].lambdaGC.normalize(sharedMinimum);
+      gcNormalized[systemId][componentId] = true;
     }
 
-    const double pairSwapMinBias = system.pairSwapLambdaMinBias();
-    if (pairSwapMinBias < minBias)
+    familySystems.clear();
+    sharedMinimum = std::numeric_limits<double>::max();
+    for (std::size_t systemId = 0; systemId < systems.size(); ++systemId)
     {
-      minBias = pairSwapMinBias;
-    }
-
-    if (system.usesReactionConventionalCFCMC())
-    {
-      const double reactionMinBias = system.reactionLambdaMinBias();
-      if (reactionMinBias < minBias)
+      const System& system = systems[systemId];
+      if (componentId >= system.components.size() || !system.gibbsLambdaActive(componentId))
       {
-        minBias = reactionMinBias;
+        continue;
       }
+      familySystems.push_back(systemId);
+      sharedMinimum = std::min(
+          sharedMinimum, *std::ranges::min_element(system.components[componentId].lambdaGibbs.biasFactor));
+    }
+    for (std::size_t systemId : familySystems)
+    {
+      systems[systemId].components[componentId].lambdaGibbs.normalize(sharedMinimum);
     }
   }
-  for (System& system : systems)
+
+  for (std::size_t systemId = 0; System& system : systems)
   {
-    for (Component& component : system.components)
+    for (std::size_t componentId = 0; Component& component : system.components)
     {
-      component.lambdaGC.normalize(minBias);
-      if (system.usesGibbsConventionalCFCMC())
+      if (system.gcLambdaAdaptiveBiasEnabled(componentId) && !gcNormalized[systemId][componentId])
       {
-        component.lambdaGibbs.normalize(minBias);
+        component.lambdaGC.normalizeToMinimum();
       }
+      ++componentId;
     }
-    system.pairSwapLambdaNormalize(minBias);
-    system.reactionLambdaNormalize(minBias);
+    system.normalizeIndependentPairGroupLambdaFamilies();
+    system.normalizeReactionLambdaFamilies();
+    ++systemId;
   }
 
   if (outputToFiles)
@@ -849,15 +929,19 @@ void MonteCarlo::production(std::function<void()> call_back_function, std::size_
     std::filesystem::create_directories("bias_factors");
     for (std::size_t system_id{0}; System& system : systems)
     {
-      for (Component& component : system.components)
+      for (std::size_t componentId = 0; Component& component : system.components)
       {
-        component.lambdaGC.writeBiasingFile(
-            std::format("bias_factors/lambda_bias_{}.s{}.json", component.name, system_id));
-        if (system.usesGibbsConventionalCFCMC())
+        if (system.gcLambdaAdaptiveBiasEnabled(componentId))
+        {
+          component.lambdaGC.writeBiasingFile(
+              std::format("bias_factors/lambda_bias_{}.s{}.json", component.name, system_id));
+        }
+        if (system.gibbsLambdaActive(componentId))
         {
           component.lambdaGibbs.writeBiasingFile(
               std::format("bias_factors/lambda_gibbs_bias_{}.s{}.json", component.name, system_id));
         }
+        ++componentId;
       }
       system.pairSwapLambdaWriteBiasingFiles(system_id);
       for (Reaction& reaction : system.reactions.list)
@@ -897,7 +981,8 @@ void MonteCarlo::production(std::function<void()> call_back_function, std::size_
         std::chrono::steady_clock::time_point time2 = std::chrono::steady_clock::now();
 
         system.mc_moves_cputime.energyPressureComputation += (time2 - time1);
-        system.averageEnergies.addSample(estimation.currentBin, molecularPressure.first, system.weight());
+        system.sampleEnergyAndPressure(estimation.currentBin, molecularPressure.first,
+                                       system.currentExcessPressureTensor);
 
         if (std::getenv("RASPA_PRESSURE_FD") != nullptr && currentCycle % printEvery == 0uz)
         {

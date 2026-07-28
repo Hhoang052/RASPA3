@@ -692,7 +692,8 @@ void MonteCarloTransitionMatrix::production()
         std::chrono::steady_clock::time_point time2 = std::chrono::steady_clock::now();
 
         system.mc_moves_cputime.energyPressureComputation += (time2 - time1);
-        system.averageEnergies.addSample(estimation.currentBin, molecularPressure.first, system.weight());
+        system.sampleEnergyAndPressure(estimation.currentBin, molecularPressure.first,
+                                       system.currentExcessPressureTensor);
       }
 
       ++system_id;

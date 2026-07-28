@@ -133,6 +133,19 @@ export struct PropertyLambdaProbabilityHistogram
     }
   }
 
+  void normalizeToMinimum()
+  {
+    if (biasFactor.empty())
+    {
+      throw std::runtime_error("Cannot normalize an empty lambda-bias histogram");
+    }
+    if (!std::ranges::all_of(biasFactor, [](double bias) { return std::isfinite(bias); }))
+    {
+      throw std::runtime_error("Cannot normalize a lambda-bias histogram containing a non-finite value");
+    }
+    normalize(*std::ranges::min_element(biasFactor));
+  }
+
   void sampleHistogram(std::size_t blockIndex, double fluidDensity, double dUdlambda,
                        bool containsTheFractionalMolecule, double w)
   {
@@ -443,7 +456,7 @@ export struct PropertyLambdaProbabilityHistogram
     double average = averagedExcessChemicalPotentialDUdlambda() + averagedIdealGasChemicalPotential(beta);
 
     double confidenceIntervalError = blockErrorEstimate(
-        density.bookKeeping, average, [&](std::size_t i)
+        density.bookKeeping, density.rawSampleCounts, average, [&](std::size_t i)
         { return averagedExcessChemicalPotentialDUdlambda(i) + averagedIdealGasChemicalPotential(i, beta); });
 
     return std::make_pair(average, confidenceIntervalError);
@@ -455,7 +468,7 @@ export struct PropertyLambdaProbabilityHistogram
         std::exp(beta * (averagedExcessChemicalPotentialDUdlambda() + averagedIdealGasChemicalPotential(beta))) / beta;
 
     double confidenceIntervalError =
-        blockErrorEstimate(density.bookKeeping, average, [&](std::size_t i)
+        blockErrorEstimate(density.bookKeeping, density.rawSampleCounts, average, [&](std::size_t i)
                            {
                              return std::exp(beta * (averagedExcessChemicalPotentialDUdlambda(i) +
                                                      averagedIdealGasChemicalPotential(i, beta))) /

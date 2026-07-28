@@ -429,31 +429,25 @@ export struct System
                            std::size_t(0), [](const std::size_t& acc, const std::size_t& b) { return acc + b; });
   }
 
-  // The biased-to-Boltzmann reweighting factor of a configuration removes the bias of every
-  // fractional molecule simultaneously. The biasing weight functions W_i(lambda_i) add in the
-  // exponent, so the per-configuration weight is exp(-sum_i W_i) = prod_i exp(-W_i), i.e. the
-  // product of the individual lambda weights (each weight() already equals exp(-W_i)). This
-  // reduces to a single term when only one fractional molecule is present; inactive lambda
-  // coordinates contribute exp(0) = 1 and drop out of the product.
-  // Improving the accuracy of computing chemical potentials in CFCMC simulations
-  // A. Rahbari, R. Hens, D. Dubbeldam, and T.J.H Vlugt
-  // Mol. Phys.  117(23-24), 3493-3508, 2019
-  double weight() const
-  {
-    double w = std::transform_reduce(
-        components.begin(), components.end(), 1.0, [](const double& acc, const double& b) { return acc * b; },
-        [](const Component& component) { return component.lambdaGC.weight() * component.lambdaGibbs.weight(); });
+  /// Whether the component's shared GC lambda histogram is backed by an allocated fractional slot.
+  /// The histogram is shared by conventional CFCMC, CB/CFCMC, Widom-CFCMC, serial Gibbs-swap CFCMC,
+  /// and fixed-GC-lambda thermodynamic integration.
+  [[nodiscard]] bool gcLambdaActive(std::size_t componentId) const noexcept;
+  [[nodiscard]] bool gcLambdaMovesEnabled(std::size_t componentId) const noexcept;
+  [[nodiscard]] bool gcLambdaAdaptiveBiasEnabled(std::size_t componentId) const noexcept;
+  [[nodiscard]] bool gcLambdaContributesToWeight(std::size_t componentId) const noexcept;
 
-    if (usesReactionConventionalCFCMC())
-    {
-      for (const Reaction& reaction : reactions.list)
-      {
-        w *= activeReactionLambdaHistogram(reaction).weight();
-      }
-    }
+  /// Whether the component owns a conventional-Gibbs lambda coordinate.
+  [[nodiscard]] bool gibbsLambdaActive(std::size_t componentId) const noexcept;
 
-    return w;
-  }
+  [[nodiscard]] bool hasAnyActiveLambdaCoordinate() const noexcept;
+
+  // The biased-to-Boltzmann reweighting factor removes only biases belonging to allocated lambda
+  // coordinates. Inactive placeholder histograms must never affect ordinary NVT/NPT statistics.
+  // Compute the product through its logarithm so an invalid/underflowed factor is diagnosed rather
+  // than silently turning every accumulated observable into zero.
+  [[nodiscard]] double lambdaLogWeight() const;
+  [[nodiscard]] double weight() const;
 
   void removeRedundantMoves();
   void rescaleMoveProbabilities();
@@ -491,6 +485,8 @@ export struct System
   void reactionLambdaFinalize() noexcept;
   [[nodiscard]] bool componentDrivesPairSwapLambda(std::size_t componentId, Move::Types move) const noexcept;
   [[nodiscard]] bool componentDrivesGroupSwapLambda(std::size_t componentId, Move::Types move) const noexcept;
+  [[nodiscard]] bool componentPairSwapLambdaMovesEnabled(std::size_t componentId, Move::Types move) const noexcept;
+  [[nodiscard]] bool componentGroupSwapLambdaMovesEnabled(std::size_t componentId, Move::Types move) const noexcept;
   /// The component whose group-swap lambda histogram drives the group fractional slots of
   /// 'componentId' for the given group CFCMC move (the driver itself or a component listing
   /// 'componentId' among its GroupComponents). Returns std::nullopt when there is none.
@@ -504,9 +500,11 @@ export struct System
   void pairSwapLambdaClearBookkeeping() noexcept;
   [[nodiscard]] double pairSwapLambdaMinBias() const noexcept;
   void pairSwapLambdaNormalize(double minBias) noexcept;
+  void normalizeIndependentPairGroupLambdaFamilies();
   void pairSwapLambdaWriteBiasingFiles(std::size_t systemId);
   [[nodiscard]] double reactionLambdaMinBias() const noexcept;
   void reactionLambdaNormalize(double minBias) noexcept;
+  void normalizeReactionLambdaFamilies();
   void reactionLambdaSampleProductionHistograms(std::size_t blockIndex, double weight) noexcept;
   void rescaleMolarFractions();
   void computeComponentFluidProperties();
@@ -606,6 +604,8 @@ export struct System
   bool insideBlockedPockets(const Component& component, std::span<const Atom> molecule_atoms) const;
 
   void sampleProperties(std::size_t systemId, std::size_t currentBlock, std::size_t currentCycle);
+  void sampleEnergyAndPressure(std::size_t currentBlock, const EnergyStatus& energy,
+                               const double3x3& excessPressureTensor);
   void samplePropertiesEvolution(std::size_t absoluteCurrentCycle);
 
   void writeCPUTimeStatistics(std::ostream& stream) const;

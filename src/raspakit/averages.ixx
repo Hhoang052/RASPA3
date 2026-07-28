@@ -171,26 +171,30 @@ T blockErrorEstimate(const std::vector<T> &blockAverages, const T &average)
 /**
  * \brief Estimates the confidence-interval error directly from a block book-keeping container.
  *
- * Convenience overload that also performs the standard "at least half filled" block selection:
- * a block is used only when its accumulated weight exceeds half of the weight of the first block.
+ * Convenience overload that also performs the standard "at least half filled" block selection,
+ * based on raw sample counts rather than statistical weights.
  * The per-block average is obtained through \p perBlockAverage.
  *
  * \tparam T A BlockAverageable value type.
  * \tparam BookKeeping A container of std::pair<value, weight>.
+ * \tparam RawSampleCounts A container with the unweighted sample count of each block.
  * \tparam PerBlockAverage Callable taking a block index and returning the block average of type T.
  * \param bookKeeping The per-block accumulators paired with their weights.
+ * \param rawSampleCounts The raw sample count of each block.
  * \param average The overall average.
  * \param perBlockAverage Callable returning the average of a single block.
  * \return The confidence-interval error, shaped like \p average.
  */
-export template <BlockAverageable T, typename BookKeeping, typename PerBlockAverage>
-T blockErrorEstimate(const BookKeeping &bookKeeping, const T &average, PerBlockAverage perBlockAverage)
+export template <BlockAverageable T, typename BookKeeping, typename RawSampleCounts, typename PerBlockAverage>
+T blockErrorEstimate(const BookKeeping &bookKeeping, const RawSampleCounts &rawSampleCounts, const T &average,
+                     PerBlockAverage perBlockAverage)
 {
   std::vector<T> blockAverages;
-  double reference = std::max(1.0, bookKeeping.empty() ? 1.0 : bookKeeping.front().second);
+  const std::size_t reference =
+      rawSampleCounts.empty() ? 0 : *std::ranges::max_element(rawSampleCounts);
   for (std::size_t blockIndex = 0; blockIndex != bookKeeping.size(); ++blockIndex)
   {
-    if (bookKeeping[blockIndex].second / reference > 0.5)
+    if (reference > 0 && rawSampleCounts[blockIndex] > reference / 2)
     {
       blockAverages.push_back(perBlockAverage(blockIndex));
     }

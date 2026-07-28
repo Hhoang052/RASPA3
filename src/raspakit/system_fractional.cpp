@@ -54,6 +54,132 @@ static bool pinsFixedLambda(const Component &component, Component::FixedLambdaCo
   return component.fixedLambdaBin.has_value() && component.fixedLambdaCoordinate == coordinate;
 }
 
+bool System::gcLambdaActive(std::size_t componentId) const noexcept
+{
+  return componentId < components.size() &&
+         (numberOfGCFractionalMoleculesPerComponent_CFCMC[componentId] > 0 ||
+          numberOfPairGCFractionalMoleculesPerComponent_CFCMC[componentId] > 0 ||
+          numberOfGibbsSwapFractionalMoleculesPerComponent_CFCMC[componentId] > 0);
+}
+
+bool System::gcLambdaMovesEnabled(std::size_t componentId) const noexcept
+{
+  if (componentId >= components.size())
+  {
+    return false;
+  }
+  const MCMoveProbabilities& moves = components[componentId].mc_moves_probabilities;
+  return moves.getProbability(Move::Types::SwapCFCMC) > 0.0 ||
+         moves.getProbability(Move::Types::WidomCFCMC) > 0.0 ||
+         moves.getProbability(Move::Types::SwapCBCFCMC) > 0.0 ||
+         moves.getProbability(Move::Types::WidomCBCFCMC) > 0.0 ||
+         moves.getProbability(Move::Types::GibbsSwapCFCMC) > 0.0 ||
+         moves.getProbability(Move::Types::GibbsSwapCBCFCMC) > 0.0;
+}
+
+bool System::gcLambdaAdaptiveBiasEnabled(std::size_t componentId) const noexcept
+{
+  return gcLambdaMovesEnabled(componentId);
+}
+
+bool System::gcLambdaContributesToWeight(std::size_t componentId) const noexcept
+{
+  return gcLambdaMovesEnabled(componentId);
+}
+
+bool System::gibbsLambdaActive(std::size_t componentId) const noexcept
+{
+  return componentId < components.size() &&
+         numberOfGibbsFractionalMoleculesPerComponent_CFCMC[componentId] > 0;
+}
+
+bool System::hasAnyActiveLambdaCoordinate() const noexcept
+{
+  for (std::size_t componentId = 0; componentId < components.size(); ++componentId)
+  {
+    if (gcLambdaActive(componentId) || gibbsLambdaActive(componentId) ||
+        componentDrivesPairSwapLambda(componentId, Move::Types::PairSwapCFCMC) ||
+        componentDrivesPairSwapLambda(componentId, Move::Types::PairSwapCBCFCMC) ||
+        componentDrivesGroupSwapLambda(componentId, Move::Types::GroupSwapCFCMC) ||
+        componentDrivesGroupSwapLambda(componentId, Move::Types::GroupSwapCBCFCMC))
+    {
+      return true;
+    }
+  }
+  return usesReactionConventionalCFCMC();
+}
+
+double System::lambdaLogWeight() const
+{
+  double logWeight = 0.0;
+  for (std::size_t componentId = 0; componentId < components.size(); ++componentId)
+  {
+    const Component& component = components[componentId];
+    if (gcLambdaContributesToWeight(componentId))
+    {
+      logWeight -= component.lambdaGC.biasFactor.at(component.lambdaGC.currentBin);
+    }
+    if (gibbsLambdaActive(componentId))
+    {
+      logWeight -= component.lambdaGibbs.biasFactor.at(component.lambdaGibbs.currentBin);
+    }
+    if (componentPairSwapLambdaMovesEnabled(componentId, Move::Types::PairSwapCFCMC))
+    {
+      logWeight -= component.lambdaPairSwap.biasFactor.at(component.lambdaPairSwap.currentBin);
+    }
+    if (componentPairSwapLambdaMovesEnabled(componentId, Move::Types::PairSwapCBCFCMC))
+    {
+      logWeight -= component.lambdaPairSwapCB.biasFactor.at(component.lambdaPairSwapCB.currentBin);
+    }
+    if (componentGroupSwapLambdaMovesEnabled(componentId, Move::Types::GroupSwapCFCMC))
+    {
+      logWeight -= component.lambdaGroupSwap.biasFactor.at(component.lambdaGroupSwap.currentBin);
+    }
+    if (componentGroupSwapLambdaMovesEnabled(componentId, Move::Types::GroupSwapCBCFCMC))
+    {
+      logWeight -= component.lambdaGroupSwapCB.biasFactor.at(component.lambdaGroupSwapCB.currentBin);
+    }
+  }
+
+  if (usesReactionConventionalCFCMC())
+  {
+    for (const Reaction& reaction : reactions.list)
+    {
+      if (!reaction.isSerialRxCFC() && !reaction.isParallelRxCFC())
+      {
+        continue;
+      }
+      const PropertyLambdaProbabilityHistogram& histogram = activeReactionLambdaHistogram(reaction);
+      logWeight -= histogram.biasFactor.at(histogram.currentBin);
+    }
+  }
+
+  if (!std::isfinite(logWeight))
+  {
+    throw std::runtime_error("Non-finite CFCMC log reweighting factor");
+  }
+  return logWeight;
+}
+
+double System::weight() const
+{
+  const double logWeight = lambdaLogWeight();
+  const double minimumLogWeight = std::log(std::numeric_limits<double>::denorm_min());
+  if (logWeight < minimumLogWeight)
+  {
+    throw std::runtime_error(
+        std::format("CFCMC reweighting factor underflow (log(weight) = {}); check active bias normalization",
+                    logWeight));
+  }
+
+  const double result = std::exp(logWeight);
+  if (!std::isfinite(result) || result <= 0.0)
+  {
+    throw std::runtime_error(std::format("Invalid CFCMC reweighting factor {} (log(weight) = {})", result, logWeight));
+  }
+  return result;
+}
+
 void System::determineFractionalComponents()
 {
   for (std::size_t i = 0; i < components.size(); ++i)
@@ -667,6 +793,10 @@ void System::reactionLambdaWangLandauIteration(PropertyLambdaProbabilityHistogra
 
   for (Reaction& reaction : reactions.list)
   {
+    if (!reaction.isSerialRxCFC() && !reaction.isParallelRxCFC())
+    {
+      continue;
+    }
     if (phase == PropertyLambdaProbabilityHistogram::WangLandauPhase::Sample)
     {
       syncReactionLambdaBin(reaction);
@@ -692,6 +822,10 @@ void System::reactionLambdaSampleOccupancy() noexcept
   const bool hasFractionals = hasReactionFractionalMolecules();
   for (Reaction& reaction : reactions.list)
   {
+    if (!reaction.isSerialRxCFC() && !reaction.isParallelRxCFC())
+    {
+      continue;
+    }
     if (reaction.isSerialRxCFC())
     {
       // sample both sides so that each histogram's occupancy measures the fraction of samples for
@@ -708,6 +842,10 @@ void System::reactionLambdaClearBookkeeping() noexcept
 {
   for (Reaction& reaction : reactions.list)
   {
+    if (!reaction.isSerialRxCFC() && !reaction.isParallelRxCFC())
+    {
+      continue;
+    }
     reaction.lambda.clear();
     if (reaction.isSerialRxCFC())
     {
@@ -726,6 +864,10 @@ void System::reactionLambdaFinalize() noexcept
   const bool hasFractionals = hasReactionFractionalMolecules();
   for (Reaction& reaction : reactions.list)
   {
+    if (!reaction.isSerialRxCFC() && !reaction.isParallelRxCFC())
+    {
+      continue;
+    }
     reaction.lambda.WangLandauIteration(PropertyLambdaProbabilityHistogram::WangLandauPhase::Finalize, hasFractionals);
     if (reaction.isSerialRxCFC())
     {
@@ -740,6 +882,10 @@ double System::reactionLambdaMinBias() const noexcept
   double minBias = std::numeric_limits<double>::max();
   for (const Reaction& reaction : reactions.list)
   {
+    if (!reaction.isSerialRxCFC() && !reaction.isParallelRxCFC())
+    {
+      continue;
+    }
     const PropertyLambdaProbabilityHistogram& histogram = activeReactionLambdaHistogram(reaction);
     if (!histogram.biasFactor.empty())
     {
@@ -755,11 +901,46 @@ void System::reactionLambdaNormalize(double minBias) noexcept
 {
   for (Reaction& reaction : reactions.list)
   {
+    if (!reaction.isSerialRxCFC() && !reaction.isParallelRxCFC())
+    {
+      continue;
+    }
     reaction.lambda.normalize(minBias);
     if (reaction.isSerialRxCFC())
     {
       reaction.lambdaProductSide.normalize(minBias);
     }
+  }
+}
+
+void System::normalizeReactionLambdaFamilies()
+{
+  if (!usesReactionConventionalCFCMC())
+  {
+    return;
+  }
+
+  for (Reaction& reaction : reactions.list)
+  {
+    if (!reaction.isSerialRxCFC() && !reaction.isParallelRxCFC())
+    {
+      continue;
+    }
+    if (!reaction.isSerialRxCFC())
+    {
+      reaction.lambda.normalizeToMinimum();
+      continue;
+    }
+
+    if (reaction.lambda.biasFactor.empty() || reaction.lambdaProductSide.biasFactor.empty())
+    {
+      throw std::runtime_error("Cannot normalize an empty serial-reaction lambda family");
+    }
+    const double reactantMinimum = *std::ranges::min_element(reaction.lambda.biasFactor);
+    const double productMinimum = *std::ranges::min_element(reaction.lambdaProductSide.biasFactor);
+    const double sharedMinimum = std::min(reactantMinimum, productMinimum);
+    reaction.lambda.normalize(sharedMinimum);
+    reaction.lambdaProductSide.normalize(sharedMinimum);
   }
 }
 
@@ -785,6 +966,22 @@ bool System::componentDrivesPairSwapLambda(std::size_t componentId, Move::Types 
           pinsFixedLambda(component, Component::FixedLambdaCoordinate::PairSwap));
 }
 
+bool System::componentPairSwapLambdaMovesEnabled(std::size_t componentId, Move::Types move) const noexcept
+{
+  if (componentId >= components.size())
+  {
+    return false;
+  }
+  const Component& component = components[componentId];
+  if (!component.pairComponentId.has_value())
+  {
+    return false;
+  }
+  const std::size_t partner = component.pairComponentId.value();
+  return partner < components.size() && componentId < partner &&
+         component.mc_moves_probabilities.getProbability(move) > 0.0;
+}
+
 // A component "drives" a group-swap lambda histogram if it has a group definition (GroupComponents)
 // and the corresponding group CFCMC move is enabled. All fractional molecules of the group (central
 // and satellites) are coupled to the driving component's histogram.
@@ -800,6 +997,12 @@ bool System::componentDrivesGroupSwapLambda(std::size_t componentId, Move::Types
   return component.mc_moves_probabilities.getProbability(move) > 0.0 ||
          (move == Move::Types::GroupSwapCFCMC &&
           pinsFixedLambda(component, Component::FixedLambdaCoordinate::GroupSwap));
+}
+
+bool System::componentGroupSwapLambdaMovesEnabled(std::size_t componentId, Move::Types move) const noexcept
+{
+  return componentId < components.size() && !components[componentId].groupComponentIds.empty() &&
+         components[componentId].mc_moves_probabilities.getProbability(move) > 0.0;
 }
 
 // The driving component of the group fractional slots held by 'componentId': either the component
@@ -996,19 +1199,19 @@ void System::pairSwapLambdaWangLandauIteration(PropertyLambdaProbabilityHistogra
 {
   for (std::size_t i = 0; i < components.size(); ++i)
   {
-    if (componentDrivesPairSwapLambda(i, Move::Types::PairSwapCFCMC))
+    if (componentPairSwapLambdaMovesEnabled(i, Move::Types::PairSwapCFCMC))
     {
       components[i].lambdaPairSwap.WangLandauIteration(phase, containsTheFractionalMolecule);
     }
-    if (componentDrivesPairSwapLambda(i, Move::Types::PairSwapCBCFCMC))
+    if (componentPairSwapLambdaMovesEnabled(i, Move::Types::PairSwapCBCFCMC))
     {
       components[i].lambdaPairSwapCB.WangLandauIteration(phase, containsTheFractionalMolecule);
     }
-    if (componentDrivesGroupSwapLambda(i, Move::Types::GroupSwapCFCMC))
+    if (componentGroupSwapLambdaMovesEnabled(i, Move::Types::GroupSwapCFCMC))
     {
       components[i].lambdaGroupSwap.WangLandauIteration(phase, containsTheFractionalMolecule);
     }
-    if (componentDrivesGroupSwapLambda(i, Move::Types::GroupSwapCBCFCMC))
+    if (componentGroupSwapLambdaMovesEnabled(i, Move::Types::GroupSwapCBCFCMC))
     {
       components[i].lambdaGroupSwapCB.WangLandauIteration(phase, containsTheFractionalMolecule);
     }
@@ -1066,22 +1269,22 @@ double System::pairSwapLambdaMinBias() const noexcept
   double minBias = std::numeric_limits<double>::max();
   for (std::size_t i = 0; i < components.size(); ++i)
   {
-    if (componentDrivesPairSwapLambda(i, Move::Types::PairSwapCFCMC))
+    if (componentPairSwapLambdaMovesEnabled(i, Move::Types::PairSwapCFCMC))
     {
       minBias = std::min(minBias, *std::min_element(components[i].lambdaPairSwap.biasFactor.cbegin(),
                                                     components[i].lambdaPairSwap.biasFactor.cend()));
     }
-    if (componentDrivesPairSwapLambda(i, Move::Types::PairSwapCBCFCMC))
+    if (componentPairSwapLambdaMovesEnabled(i, Move::Types::PairSwapCBCFCMC))
     {
       minBias = std::min(minBias, *std::min_element(components[i].lambdaPairSwapCB.biasFactor.cbegin(),
                                                     components[i].lambdaPairSwapCB.biasFactor.cend()));
     }
-    if (componentDrivesGroupSwapLambda(i, Move::Types::GroupSwapCFCMC))
+    if (componentGroupSwapLambdaMovesEnabled(i, Move::Types::GroupSwapCFCMC))
     {
       minBias = std::min(minBias, *std::min_element(components[i].lambdaGroupSwap.biasFactor.cbegin(),
                                                     components[i].lambdaGroupSwap.biasFactor.cend()));
     }
-    if (componentDrivesGroupSwapLambda(i, Move::Types::GroupSwapCBCFCMC))
+    if (componentGroupSwapLambdaMovesEnabled(i, Move::Types::GroupSwapCBCFCMC))
     {
       minBias = std::min(minBias, *std::min_element(components[i].lambdaGroupSwapCB.biasFactor.cbegin(),
                                                     components[i].lambdaGroupSwapCB.biasFactor.cend()));
@@ -1094,21 +1297,45 @@ void System::pairSwapLambdaNormalize(double minBias) noexcept
 {
   for (std::size_t i = 0; i < components.size(); ++i)
   {
-    if (componentDrivesPairSwapLambda(i, Move::Types::PairSwapCFCMC))
+    if (componentPairSwapLambdaMovesEnabled(i, Move::Types::PairSwapCFCMC))
     {
       components[i].lambdaPairSwap.normalize(minBias);
     }
-    if (componentDrivesPairSwapLambda(i, Move::Types::PairSwapCBCFCMC))
+    if (componentPairSwapLambdaMovesEnabled(i, Move::Types::PairSwapCBCFCMC))
     {
       components[i].lambdaPairSwapCB.normalize(minBias);
     }
-    if (componentDrivesGroupSwapLambda(i, Move::Types::GroupSwapCFCMC))
+    if (componentGroupSwapLambdaMovesEnabled(i, Move::Types::GroupSwapCFCMC))
     {
       components[i].lambdaGroupSwap.normalize(minBias);
     }
-    if (componentDrivesGroupSwapLambda(i, Move::Types::GroupSwapCBCFCMC))
+    if (componentGroupSwapLambdaMovesEnabled(i, Move::Types::GroupSwapCBCFCMC))
     {
       components[i].lambdaGroupSwapCB.normalize(minBias);
+    }
+  }
+}
+
+void System::normalizeIndependentPairGroupLambdaFamilies()
+{
+  for (std::size_t componentId = 0; componentId < components.size(); ++componentId)
+  {
+    Component& component = components[componentId];
+    if (componentPairSwapLambdaMovesEnabled(componentId, Move::Types::PairSwapCFCMC))
+    {
+      component.lambdaPairSwap.normalizeToMinimum();
+    }
+    if (componentPairSwapLambdaMovesEnabled(componentId, Move::Types::PairSwapCBCFCMC))
+    {
+      component.lambdaPairSwapCB.normalizeToMinimum();
+    }
+    if (componentGroupSwapLambdaMovesEnabled(componentId, Move::Types::GroupSwapCFCMC))
+    {
+      component.lambdaGroupSwap.normalizeToMinimum();
+    }
+    if (componentGroupSwapLambdaMovesEnabled(componentId, Move::Types::GroupSwapCBCFCMC))
+    {
+      component.lambdaGroupSwapCB.normalizeToMinimum();
     }
   }
 }
@@ -1117,22 +1344,22 @@ void System::pairSwapLambdaWriteBiasingFiles(std::size_t systemId)
 {
   for (std::size_t i = 0; i < components.size(); ++i)
   {
-    if (componentDrivesPairSwapLambda(i, Move::Types::PairSwapCFCMC))
+    if (componentPairSwapLambdaMovesEnabled(i, Move::Types::PairSwapCFCMC))
     {
       components[i].lambdaPairSwap.writeBiasingFile(
           std::format("bias_factors/lambda_pair_bias_{}.s{}.json", components[i].name, systemId));
     }
-    if (componentDrivesPairSwapLambda(i, Move::Types::PairSwapCBCFCMC))
+    if (componentPairSwapLambdaMovesEnabled(i, Move::Types::PairSwapCBCFCMC))
     {
       components[i].lambdaPairSwapCB.writeBiasingFile(
           std::format("bias_factors/lambda_pair_cb_bias_{}.s{}.json", components[i].name, systemId));
     }
-    if (componentDrivesGroupSwapLambda(i, Move::Types::GroupSwapCFCMC))
+    if (componentGroupSwapLambdaMovesEnabled(i, Move::Types::GroupSwapCFCMC))
     {
       components[i].lambdaGroupSwap.writeBiasingFile(
           std::format("bias_factors/lambda_group_bias_{}.s{}.json", components[i].name, systemId));
     }
-    if (componentDrivesGroupSwapLambda(i, Move::Types::GroupSwapCBCFCMC))
+    if (componentGroupSwapLambdaMovesEnabled(i, Move::Types::GroupSwapCBCFCMC))
     {
       components[i].lambdaGroupSwapCB.writeBiasingFile(
           std::format("bias_factors/lambda_group_cb_bias_{}.s{}.json", components[i].name, systemId));
@@ -1152,6 +1379,10 @@ void System::reactionLambdaSampleProductionHistograms(std::size_t blockIndex, do
 
   for (Reaction& reaction : reactions.list)
   {
+    if (!reaction.isSerialRxCFC() && !reaction.isParallelRxCFC())
+    {
+      continue;
+    }
     PropertyLambdaProbabilityHistogram& histogram = activeReactionLambdaHistogram(reaction);
     syncReactionLambdaBin(reaction);
     const double dudlambda = reactionDUdlambda(reaction);

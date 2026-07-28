@@ -61,17 +61,19 @@ struct BlockAverage
   /// the result of Sample::compositeProperty() for composite properties.
   using Data = typename BlockAverageDataType<Sample>::type;
 
-  std::uint64_t versionNumber{1};
+  std::uint64_t versionNumber{2};
   std::size_t numberOfBlocks{};
   Sample zeroSample{};
   std::vector<std::pair<Sample, double>> bookKeeping;
+  std::vector<std::size_t> rawSampleCounts;
 
   BlockAverage() = default;
 
   explicit BlockAverage(std::size_t numberOfBlocks, Sample zero = Sample{})
       : numberOfBlocks(numberOfBlocks),
         zeroSample(zero),
-        bookKeeping(numberOfBlocks, std::make_pair(zero, 0.0))
+        bookKeeping(numberOfBlocks, std::make_pair(zero, 0.0)),
+        rawSampleCounts(numberOfBlocks)
   {
   }
 
@@ -82,10 +84,21 @@ struct BlockAverage
   {
     zeroSample = zero;
     bookKeeping = std::vector<std::pair<Sample, double>>(numberOfBlocks, std::make_pair(zero, 0.0));
+    rawSampleCounts.assign(numberOfBlocks, 0);
   }
 
   void addSample(std::size_t blockIndex, const Sample &sample, const double &weight)
   {
+    if (!std::isfinite(weight) || weight < 0.0)
+    {
+      throw std::invalid_argument("BlockAverage sample weight must be finite and non-negative");
+    }
+    ++rawSampleCounts[blockIndex];
+    if (weight == 0.0)
+    {
+      return;
+    }
+
     bookKeeping[blockIndex].first += weight * sample;
     bookKeeping[blockIndex].second += weight;
   }
@@ -93,7 +106,24 @@ struct BlockAverage
   /// Average of a single block.
   Data averaged(std::size_t blockIndex) const
   {
-    Sample normalized = bookKeeping[blockIndex].first / std::max(1.0, bookKeeping[blockIndex].second);
+    const double accumulatedWeight = bookKeeping[blockIndex].second;
+    if (accumulatedWeight == 0.0)
+    {
+      if (rawSampleCounts[blockIndex] > 0)
+      {
+        throw std::runtime_error("All BlockAverage sample weights in a non-empty block are zero");
+      }
+      if constexpr (CompositePropertyTerms<Sample>)
+      {
+        return zeroSample.zeroCompositeProperty();
+      }
+      else
+      {
+        return zeroSample;
+      }
+    }
+
+    Sample normalized = bookKeeping[blockIndex].first / accumulatedWeight;
     if constexpr (CompositePropertyTerms<Sample>)
     {
       return normalized.compositeProperty();
@@ -112,10 +142,11 @@ struct BlockAverage
     {
       Data accumulated = zeroSample.zeroCompositeProperty();
       std::size_t numberOfSamples = 0;
-      double reference = std::max(1.0, bookKeeping.empty() ? 1.0 : bookKeeping.front().second);
+      const std::size_t reference =
+          rawSampleCounts.empty() ? 0 : *std::ranges::max_element(rawSampleCounts);
       for (std::size_t blockIndex = 0; blockIndex != bookKeeping.size(); ++blockIndex)
       {
-        if (bookKeeping[blockIndex].second / reference > 0.5)
+        if (reference > 0 && rawSampleCounts[blockIndex] > reference / 2)
         {
           accumulated += averaged(blockIndex);
           ++numberOfSamples;
@@ -128,7 +159,15 @@ struct BlockAverage
       std::pair<Sample, double> summedBlocks =
           std::accumulate(bookKeeping.begin(), bookKeeping.end(), std::make_pair(zeroSample, 0.0),
                           pairSum<Sample, double>);
-      return summedBlocks.first / std::max(1.0, summedBlocks.second);
+      if (summedBlocks.second > 0.0)
+      {
+        return summedBlocks.first / summedBlocks.second;
+      }
+      if (std::ranges::any_of(rawSampleCounts, [](std::size_t count) { return count > 0; }))
+      {
+        throw std::runtime_error("All BlockAverage sample weights are zero");
+      }
+      return zeroSample;
     }
   }
 
@@ -139,8 +178,8 @@ struct BlockAverage
   auto statistics(Transform transform) const
   {
     auto mean = transform(averaged());
-    auto confidenceIntervalError =
-        blockErrorEstimate(bookKeeping, mean, [&](std::size_t i) { return transform(averaged(i)); });
+    auto confidenceIntervalError = blockErrorEstimate(
+        bookKeeping, rawSampleCounts, mean, [&](std::size_t i) { return transform(averaged(i)); });
     return std::make_pair(mean, confidenceIntervalError);
   }
 
@@ -170,7 +209,7 @@ struct BlockAverage
 export template <DirectlyAverageable Value>
 struct BlockHistogram
 {
-  std::uint64_t versionNumber{1};
+  std::uint64_t versionNumber{2};
   std::size_t numberOfBlocks{};
   std::size_t numberOfChannels{};
   std::size_t numberOfBins{};
@@ -178,6 +217,7 @@ struct BlockHistogram
   std::vector<std::vector<std::vector<Value>>> bookKeeping;
   /// Accumulated sample weight per block, shared by all channels.
   std::vector<double> numberOfCounts;
+  std::vector<std::size_t> rawSampleCounts;
   double totalNumberOfCounts{};
 
   BlockHistogram() = default;
@@ -188,7 +228,8 @@ struct BlockHistogram
         numberOfBins(numberOfBins),
         bookKeeping(numberOfBlocks,
                     std::vector<std::vector<Value>>(numberOfChannels, std::vector<Value>(numberOfBins))),
-        numberOfCounts(numberOfBlocks)
+        numberOfCounts(numberOfBlocks),
+        rawSampleCounts(numberOfBlocks)
   {
   }
 
@@ -203,6 +244,16 @@ struct BlockHistogram
   /// Register a sample weight (once per sample, not per channel).
   void addCount(std::size_t blockIndex, double weight)
   {
+    if (!std::isfinite(weight) || weight < 0.0)
+    {
+      throw std::invalid_argument("BlockHistogram sample weight must be finite and non-negative");
+    }
+    ++rawSampleCounts[blockIndex];
+    if (weight == 0.0)
+    {
+      return;
+    }
+
     numberOfCounts[blockIndex] += weight;
     totalNumberOfCounts += weight;
   }
@@ -211,9 +262,18 @@ struct BlockHistogram
   std::vector<Value> averaged(std::size_t blockIndex, std::size_t channelIndex) const
   {
     std::vector<Value> averagedData(numberOfBins);
+    if (numberOfCounts[blockIndex] == 0.0)
+    {
+      if (rawSampleCounts[blockIndex] > 0)
+      {
+        throw std::runtime_error("All BlockHistogram sample weights in a non-empty block are zero");
+      }
+      return averagedData;
+    }
+
     std::transform(bookKeeping[blockIndex][channelIndex].begin(), bookKeeping[blockIndex][channelIndex].end(),
                    averagedData.begin(),
-                   [&](const Value &sample) { return sample / std::max(1.0, numberOfCounts[blockIndex]); });
+                   [&](const Value &sample) { return sample / numberOfCounts[blockIndex]; });
     return averagedData;
   }
 
@@ -230,8 +290,17 @@ struct BlockHistogram
     }
 
     std::vector<Value> average(numberOfBins);
+    if (totalNumberOfCounts == 0.0)
+    {
+      if (std::ranges::any_of(rawSampleCounts, [](std::size_t count) { return count > 0; }))
+      {
+        throw std::runtime_error("All BlockHistogram sample weights are zero");
+      }
+      return average;
+    }
+
     std::transform(summedBlocks.begin(), summedBlocks.end(), average.begin(),
-                   [&](const Value &sample) { return sample / std::max(1.0, totalNumberOfCounts); });
+                   [&](const Value &sample) { return sample / totalNumberOfCounts; });
     return average;
   }
 
@@ -242,9 +311,11 @@ struct BlockHistogram
 
     std::vector<std::vector<Value>> blockAverages;
     blockAverages.reserve(numberOfBlocks);
+    const std::size_t reference =
+        rawSampleCounts.empty() ? 0 : *std::ranges::max_element(rawSampleCounts);
     for (std::size_t blockIndex = 0; blockIndex != numberOfBlocks; ++blockIndex)
     {
-      if (numberOfCounts[blockIndex] > 0.0)
+      if (reference > 0 && rawSampleCounts[blockIndex] > reference / 2)
       {
         blockAverages.push_back(averaged(blockIndex, channelIndex));
       }
@@ -265,6 +336,7 @@ Archive<std::ofstream> &operator<<(Archive<std::ofstream> &archive, const BlockH
   archive << h.numberOfBins;
   archive << h.bookKeeping;
   archive << h.numberOfCounts;
+  archive << h.rawSampleCounts;
   archive << h.totalNumberOfCounts;
 
 #if DEBUG_ARCHIVE
@@ -291,6 +363,16 @@ Archive<std::ifstream> &operator>>(Archive<std::ifstream> &archive, BlockHistogr
   archive >> h.numberOfBins;
   archive >> h.bookKeeping;
   archive >> h.numberOfCounts;
+  if (versionNumber >= 2)
+  {
+    archive >> h.rawSampleCounts;
+  }
+  else
+  {
+    h.rawSampleCounts.resize(h.numberOfBlocks);
+    std::ranges::transform(h.numberOfCounts, h.rawSampleCounts.begin(),
+                           [](double weight) { return weight > 0.0 ? 1uz : 0uz; });
+  }
   archive >> h.totalNumberOfCounts;
 
 #if DEBUG_ARCHIVE
@@ -313,6 +395,7 @@ Archive<std::ofstream> &operator<<(Archive<std::ofstream> &archive, const Proper
   archive << p.numberOfBlocks;
   archive << p.zeroSample;
   archive << p.bookKeeping;
+  archive << p.rawSampleCounts;
 
 #if DEBUG_ARCHIVE
   archive << static_cast<std::uint64_t>(0x6f6b6179);  // magic number 'okay' in hex
@@ -337,6 +420,16 @@ Archive<std::ifstream> &operator>>(Archive<std::ifstream> &archive, Property &p)
   archive >> p.numberOfBlocks;
   archive >> p.zeroSample;
   archive >> p.bookKeeping;
+  if (versionNumber >= 2)
+  {
+    archive >> p.rawSampleCounts;
+  }
+  else
+  {
+    p.rawSampleCounts.resize(p.numberOfBlocks);
+    std::ranges::transform(p.bookKeeping, p.rawSampleCounts.begin(),
+                           [](const auto &entry) { return entry.second > 0.0 ? 1uz : 0uz; });
+  }
 
 #if DEBUG_ARCHIVE
   std::uint64_t magicNumber;
