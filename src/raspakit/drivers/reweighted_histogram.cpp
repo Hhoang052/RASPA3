@@ -32,6 +32,7 @@ import mc_moves_cputime;
 import mc_moves_statistics;
 import mc_moves_parallel_tempering_swap;
 import json;
+import simulation_schedule;
 
 // The analysis-property writers (RDFs, density grid, histograms, molecule properties) gate
 // themselves on their own 'writeEvery'; a cycle argument of 0 forces the write (used for the
@@ -656,7 +657,8 @@ void ReweightedHistogram::runStage(SimulationStage stage, std::size_t numberOfCy
               }
 
               // Wang-Landau biasing-factor adjustment (all state is owned by this replica)
-              if (stage == SimulationStage::Equilibration && cycle % rescaleWangLandauEvery == 0uz)
+              if (stage == SimulationStage::Equilibration &&
+                  periodicActionDueAfterCompletedCycle(cycle, rescaleWangLandauEvery))
               {
                 for (Component& component : system.components)
                 {

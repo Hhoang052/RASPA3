@@ -15,6 +15,7 @@ import running_energy;
 import reaction;
 import mc_moves_move_types;
 import mc_moves_probabilities;
+import simulation_schedule;
 
 namespace
 {
@@ -242,6 +243,59 @@ TEST(MC_FRACTIONAL_MOLECULE_ORDER, initializes_active_lambda_after_inactive_comp
 
   EXPECT_DOUBLE_EQ(mc.systems[0].components[0].lambdaGC.WangLandauScalingFactor, 1.0);
   EXPECT_DOUBLE_EQ(mc.systems[0].components[1].lambdaGC.WangLandauScalingFactor, 0.01);
+}
+
+TEST(SIMULATION_SCHEDULE, periodic_action_after_completed_cycle)
+{
+  EXPECT_FALSE(periodicActionDueAfterCompletedCycle(0uz, 0uz));
+  EXPECT_FALSE(periodicActionDueAfterCompletedCycle(5000uz, 0uz));
+
+  EXPECT_TRUE(periodicActionDueAfterCompletedCycle(0uz, 1uz));
+  EXPECT_TRUE(periodicActionDueAfterCompletedCycle(1uz, 1uz));
+
+  EXPECT_FALSE(periodicActionDueAfterCompletedCycle(0uz, 2uz));
+  EXPECT_TRUE(periodicActionDueAfterCompletedCycle(1uz, 2uz));
+  EXPECT_FALSE(periodicActionDueAfterCompletedCycle(2uz, 2uz));
+  EXPECT_TRUE(periodicActionDueAfterCompletedCycle(3uz, 2uz));
+
+  EXPECT_FALSE(periodicActionDueAfterCompletedCycle(0uz, 5000uz));
+  EXPECT_FALSE(periodicActionDueAfterCompletedCycle(4998uz, 5000uz));
+  EXPECT_TRUE(periodicActionDueAfterCompletedCycle(4999uz, 5000uz));
+  EXPECT_FALSE(periodicActionDueAfterCompletedCycle(5000uz, 5000uz));
+  EXPECT_TRUE(periodicActionDueAfterCompletedCycle(9999uz, 5000uz));
+}
+
+TEST(MC_FRACTIONAL_MOLECULE_ORDER, rescales_wang_landau_after_completed_interval)
+{
+  const ForceField forceField = makeAlkaneForceField();
+  const SimulationBox box = SimulationBox(30.0, 30.0, 30.0);
+
+  const auto scalingFactorAfterEquilibration =
+      [&forceField, &box](std::size_t numberOfEquilibrationCycles, std::size_t rescaleEvery)
+  {
+    MCMoveProbabilities probabilities = MCMoveProbabilities();
+    probabilities.setProbability(Move::Types::SwapCFCMC, 1.0);
+
+    Component active = makeAlkaneFromExample(forceField, 0, "propane", probabilities);
+    active.lnPartitionFunction = 1.0;
+
+    System system = System(forceField, box, false, 500.0, 1e4, 1.0, {}, {active}, {},
+                           std::vector<std::size_t>{0}, 5, MCMoveProbabilities());
+
+    MonteCarlo mc =
+        MonteCarlo({0, 0, 0, numberOfEquilibrationCycles, 100, 10000, rescaleEvery, 5000},
+                   {std::move(system)}, 42uz, 5, false);
+    mc.setup();
+    mc.equilibrate();
+    return mc.systems[0].components[0].lambdaGC.WangLandauScalingFactor;
+  };
+
+  EXPECT_DOUBLE_EQ(scalingFactorAfterEquilibration(0uz, 2uz), 0.01);
+  EXPECT_DOUBLE_EQ(scalingFactorAfterEquilibration(1uz, 2uz), 0.01);
+  EXPECT_DOUBLE_EQ(scalingFactorAfterEquilibration(2uz, 2uz), 0.005);
+  EXPECT_DOUBLE_EQ(scalingFactorAfterEquilibration(4uz, 2uz), 0.0025);
+  EXPECT_DOUBLE_EQ(scalingFactorAfterEquilibration(2uz, 0uz), 0.01);
+  EXPECT_DOUBLE_EQ(scalingFactorAfterEquilibration(1uz, 1uz), 0.005);
 }
 
 }  // namespace

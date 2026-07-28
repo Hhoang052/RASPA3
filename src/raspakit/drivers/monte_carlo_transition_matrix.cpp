@@ -563,7 +563,7 @@ void MonteCarloTransitionMatrix::equilibrate()
       }
     }
 
-    if (currentCycle % rescaleWangLandauEvery == 0uz)
+    if (periodicActionDueAfterCompletedCycle(currentCycle, rescaleWangLandauEvery))
     {
       for (System& system : systems)
       {

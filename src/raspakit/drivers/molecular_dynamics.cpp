@@ -1059,7 +1059,7 @@ void MolecularDynamics::equilibrate(std::function<void()> call_back_function, st
       }
     }
 
-    if (currentCycle % rescaleWangLandauEvery == 0uz)
+    if (periodicActionDueAfterCompletedCycle(currentCycle, rescaleWangLandauEvery))
     {
       for (System& system : systems)
       {

@@ -719,7 +719,7 @@ void MonteCarlo::equilibrate(std::function<void()> call_back_function, std::size
       }
     }
 
-    if (currentCycle % rescaleWangLandauEvery == 0uz)
+    if (periodicActionDueAfterCompletedCycle(currentCycle, rescaleWangLandauEvery))
     {
       for (std::size_t system_id{0}; System& system : systems)
       {

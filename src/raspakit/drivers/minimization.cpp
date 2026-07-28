@@ -32,6 +32,7 @@ import normal_modes;
 import phonon_kpath;
 import phonon_dynamical_matrix;
 import units;
+import simulation_schedule;
 
 namespace
 {
@@ -535,7 +536,7 @@ void Minimization::equilibrate()
       }
     }
 
-    if (currentCycle % rescaleWangLandauEvery == 0uz)
+    if (periodicActionDueAfterCompletedCycle(currentCycle, rescaleWangLandauEvery))
     {
       for (System& system : systems)
       {

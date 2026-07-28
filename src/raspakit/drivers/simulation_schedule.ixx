@@ -5,6 +5,17 @@ export module simulation_schedule;
 import std;
 
 /**
+ * \brief Returns whether a periodic action is due after the current zero-based cycle completes.
+ *
+ * An interval of zero disables the action defensively. For a positive interval N, this returns true
+ * after cycles N, 2N, 3N, ... have completed (at zero-based cycle indices N-1, 2N-1, 3N-1, ...).
+ */
+export constexpr bool periodicActionDueAfterCompletedCycle(std::size_t currentCycle, std::size_t interval) noexcept
+{
+  return interval != 0uz && currentCycle % interval == interval - 1uz;
+}
+
+/**
  * \brief Run-control settings shared by the Monte Carlo and Molecular Dynamics drivers.
  *
  * SimulationSchedule groups the cycle counts of the individual simulation stages together with the

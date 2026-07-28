@@ -33,6 +33,7 @@ import mc_moves_statistics;
 import cbmc;
 import cbmc_chain_data;
 import json;
+import simulation_schedule;
 
 // The analysis-property writers (RDFs, density grid, histograms, molecule properties) gate
 // themselves on their own 'writeEvery'; a cycle argument of 0 forces the write (used for the
@@ -624,7 +625,8 @@ void ParallelTMMC::runStage(SimulationStage stage, std::size_t numberOfCycles)
               }
 
               // Wang-Landau biasing-factor adjustment (all state is owned by this walker)
-              if (stage == SimulationStage::Equilibration && cycle % rescaleWangLandauEvery == 0uz)
+              if (stage == SimulationStage::Equilibration &&
+                  periodicActionDueAfterCompletedCycle(cycle, rescaleWangLandauEvery))
               {
                 for (Component& component : system.components)
                 {
