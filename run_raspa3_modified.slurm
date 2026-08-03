@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 #
-# Submit with:
+# Submit:
 #   sbatch run_raspa3_modified.slurm /absolute/path/to/simulation-folder
 #
-# The simulation folder must contain simulation.json.
+# The simulation folder must contain:
+#   simulation.json
 #
+
 #SBATCH --job-name=raspa3-modified
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=1
+#SBATCH --hint=nomultithread
 #SBATCH --time=24:00:00
 #SBATCH --output=raspa3-modified-%j.out
 #SBATCH --error=raspa3-modified-%j.err
@@ -19,22 +22,21 @@ set -Eeuo pipefail
 
 # =============================================================================
 # CONFIGURATION
-#
-# These defaults match:
-#   source tree:  ~/RASPA3-MODIF
-#   Conda env:    ~/miniconda3/envs/raspa3-modified
-#
-# Override without editing this file if necessary:
-#   RASPA_MODIFIED_ROOT=/other/path \
-#   RASPA_ENV=/other/conda/env \
-#   sbatch run_raspa3_modified.slurm /path/to/simulation
 # =============================================================================
 
-RASPA_MODIFIED_ROOT="${RASPA_MODIFIED_ROOT:-$HOME/RASPA3-MODIF}"
-RASPA_ENV="${RASPA_ENV:-$HOME/miniconda3/envs/raspa3-modified}"
-RASPA_EXE="${RASPA_EXE:-$RASPA_MODIFIED_ROOT/build/app/raspa3}"
+# RASPA3 source directory
+RASPA_ROOT="${RASPA_ROOT:-$HOME/RASPA3}"
 
+# Conda environment used to build RASPA3
+RASPA_ENV="${RASPA_ENV:-$HOME/miniconda3/envs/raspa3-modified}"
+
+# RASPA3 executable
+RASPA_EXE="${RASPA_EXE:-$RASPA_ROOT/build/app/raspa3}"
+
+# Simulation directory passed as the first argument
 WORK_DIR="${1:-${SLURM_SUBMIT_DIR:-$PWD}}"
+
+# Number of CPUs allocated by Slurm
 ALLOCATED_CPUS="${SLURM_CPUS_PER_TASK:-1}"
 
 
@@ -43,56 +45,149 @@ ALLOCATED_CPUS="${SLURM_CPUS_PER_TASK:-1}"
 # =============================================================================
 
 if [[ ! -d "$WORK_DIR" ]]; then
-    echo "ERROR: simulation folder does not exist: $WORK_DIR" >&2
+    echo "ERROR: Simulation directory does not exist:" >&2
+    echo "       $WORK_DIR" >&2
     exit 2
 fi
 
 WORK_DIR="$(cd "$WORK_DIR" && pwd -P)"
 
 if [[ ! -f "$WORK_DIR/simulation.json" ]]; then
-    echo "ERROR: simulation.json not found in: $WORK_DIR" >&2
+    echo "ERROR: simulation.json was not found in:" >&2
+    echo "       $WORK_DIR" >&2
     exit 2
 fi
 
 if [[ ! -x "$RASPA_EXE" ]]; then
-    echo "ERROR: modified RASPA3 executable not found or not executable:" >&2
+    echo "ERROR: RASPA3 executable was not found or is not executable:" >&2
     echo "       $RASPA_EXE" >&2
-    echo "Build it first with:" >&2
-    echo "       ninja -C \"$RASPA_MODIFIED_ROOT/build\" -j\"\$(nproc)\"" >&2
+    echo >&2
+    echo "Build RASPA3 first with:" >&2
+    echo "       cmake --build \"$RASPA_ROOT/build\" --parallel 16" >&2
     exit 2
 fi
 
-if [[ ! -d "$RASPA_ENV/lib" ]]; then
-    echo "ERROR: Conda environment not found: $RASPA_ENV" >&2
-    echo "Set RASPA_ENV to the environment used to build RASPA3-MODIF." >&2
+if [[ ! -d "$RASPA_ENV/bin" || ! -d "$RASPA_ENV/lib" ]]; then
+    echo "ERROR: Invalid Conda environment:" >&2
+    echo "       $RASPA_ENV" >&2
     exit 2
 fi
 
 
 # =============================================================================
-# RUNTIME ENVIRONMENT
+# CONDA RUNTIME ENVIRONMENT
+#
+# This method works in non-interactive Slurm shells and does not require
+# `conda activate` to be initialized in .bashrc.
 # =============================================================================
 
-# Loading the environment this way works in non-interactive Slurm shells and
-# avoids relying on `conda activate` being initialized in .bashrc.
+export CONDA_PREFIX="$RASPA_ENV"
 export PATH="$RASPA_ENV/bin:$PATH"
 export LD_LIBRARY_PATH="$RASPA_ENV/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-# RASPA_DIR must be an installation prefix containing share/raspa3.
-# Local files in WORK_DIR can still be used when this directory is unavailable.
-if [[ -d "$RASPA_ENV/share/raspa3" ]]; then
-    export RASPA_DIR="$RASPA_ENV"
-elif [[ -n "${RASPA_DIR:-}" && -d "$RASPA_DIR/share/raspa3" ]]; then
+
+# =============================================================================
+# RASPA DATA DIRECTORY
+#
+# RASPA_DIR must point directly to a directory containing:
+#   forcefields/
+#   molecules/
+#
+# Installed data:
+#   $RASPA_ENV/share/raspa3
+#
+# Source-tree data:
+#   $RASPA_ROOT/data
+# =============================================================================
+
+if [[ -n "${RASPA_DIR:-}" && -d "$RASPA_DIR" ]]; then
     export RASPA_DIR
+
+elif [[ -d "$RASPA_ENV/share/raspa3" ]]; then
+    export RASPA_DIR="$RASPA_ENV/share/raspa3"
+
+elif [[ -d "$RASPA_ROOT/data/forcefields" &&
+        -d "$RASPA_ROOT/data/molecules" ]]; then
+    export RASPA_DIR="$RASPA_ROOT/data"
+
 else
-    echo "WARNING: no valid RASPA_DIR/share/raspa3 directory was found."
-    echo "Only force fields, molecules, and frameworks available in the simulation folder can be used."
+    unset RASPA_DIR || true
+
+    echo "WARNING: No valid RASPA3 data directory was found."
+    echo "Only force fields, molecules, and frameworks available in the"
+    echo "simulation directory can be used."
     echo
 fi
 
-export OMP_NUM_THREADS="$ALLOCATED_CPUS"
+
+# =============================================================================
+# DETECT THREADING MODE
+#
+# Serial:
+#   "ThreadingType": "Serial"
+#
+# OpenMP:
+#   "ThreadingType": "OpenMP"
+# =============================================================================
+
+THREADING_TYPE="Serial"
+
+if grep -Eqi \
+    '"ThreadingType"[[:space:]]*:[[:space:]]*"OpenMP"' \
+    "$WORK_DIR/simulation.json"
+then
+    THREADING_TYPE="OpenMP"
+fi
+
+if [[ "$THREADING_TYPE" == "OpenMP" ]]; then
+    RASPA_THREADS="$ALLOCATED_CPUS"
+else
+    RASPA_THREADS=1
+
+    if (( ALLOCATED_CPUS > 1 )); then
+        echo "WARNING:"
+        echo "simulation.json is configured for Serial execution,"
+        echo "but Slurm allocated $ALLOCATED_CPUS CPU cores."
+        echo "RASPA3 will use only one CPU core."
+        echo
+    fi
+fi
+
+
+# =============================================================================
+# THREAD ENVIRONMENT
+# =============================================================================
+
+# OpenMP threads used by RASPA3
+export OMP_NUM_THREADS="$RASPA_THREADS"
+export OMP_DYNAMIC=false
 export OMP_PLACES=cores
 export OMP_PROC_BIND=close
+export OMP_WAIT_POLICY=PASSIVE
+
+# Keep BLAS libraries single-threaded to avoid nested parallelism
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export BLIS_NUM_THREADS=1
+export VECLIB_MAXIMUM_THREADS=1
+
+
+# =============================================================================
+# CHECK RUNTIME LIBRARIES
+# =============================================================================
+
+MISSING_LIBRARIES="$(
+    ldd "$RASPA_EXE" 2>/dev/null |
+    awk '/not found/ { print }'
+)"
+
+if [[ -n "$MISSING_LIBRARIES" ]]; then
+    echo "ERROR: The RASPA3 executable has missing runtime libraries:" >&2
+    echo "$MISSING_LIBRARIES" >&2
+    echo >&2
+    echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >&2
+    exit 2
+fi
 
 
 # =============================================================================
@@ -105,41 +200,25 @@ START_TIME_SECONDS="$(date +%s)"
 echo "============================================================"
 echo "RASPA3 MODIFIED JOB STARTING"
 echo "============================================================"
-echo "Start time        : $START_TIME_TEXT"
-echo "Host              : $(hostname)"
-echo "Slurm job ID      : ${SLURM_JOB_ID:-not-running-under-slurm}"
-echo "Allocated CPUs    : $ALLOCATED_CPUS"
-echo "Simulation folder : $WORK_DIR"
-echo "RASPA executable  : $RASPA_EXE"
-echo "Conda environment : $RASPA_ENV"
-echo "RASPA_DIR         : ${RASPA_DIR:-not-set}"
+echo "Start time         : $START_TIME_TEXT"
+echo "Host               : $(hostname)"
+echo "Slurm job ID       : ${SLURM_JOB_ID:-not-running-under-slurm}"
+echo "Allocated CPUs     : $ALLOCATED_CPUS"
+echo "Threading type     : $THREADING_TYPE"
+echo "OMP threads        : $OMP_NUM_THREADS"
+echo "Simulation folder  : $WORK_DIR"
+echo "RASPA executable   : $RASPA_EXE"
+echo "Conda environment  : $RASPA_ENV"
+echo "RASPA_DIR          : ${RASPA_DIR:-not-set}"
 echo "============================================================"
 echo
 
 
 # =============================================================================
-# THREAD CHECK
-# =============================================================================
-
-if (( ALLOCATED_CPUS > 1 )); then
-    if ! grep -qi '"NumberOfThreads"[[:space:]]*:' \
-        "$WORK_DIR/simulation.json"
-    then
-        echo "WARNING:"
-        echo "Slurm allocated $ALLOCATED_CPUS CPU cores."
-        echo "However, simulation.json does not contain NumberOfThreads."
-        echo "RASPA3 may not use all allocated CPU cores."
-        echo "No input file will be modified."
-        echo
-    fi
-fi
-
-
-# =============================================================================
-# RUN RASPA3 MODIFIED
+# RUN RASPA3
 #
 # RASPA3 reads simulation.json from the current working directory.
-# Results produced by RASPA3 will be written inside the simulation folder.
+# Output files are written inside the simulation directory.
 # =============================================================================
 
 cd "$WORK_DIR"
@@ -176,12 +255,12 @@ echo
 echo "============================================================"
 echo "RASPA3 MODIFIED JOB FINISHED"
 echo "============================================================"
-echo "End time          : $END_TIME_TEXT"
-echo "Elapsed seconds   : $ELAPSED_SECONDS"
-echo "RASPA exit code   : $RASPA_EXIT_CODE"
-echo "Result            : $FINAL_STATUS"
-echo "Simulation folder : $WORK_DIR"
-echo "RASPA executable  : $RASPA_EXE"
+echo "End time           : $END_TIME_TEXT"
+echo "Elapsed seconds    : $ELAPSED_SECONDS"
+echo "RASPA exit code    : $RASPA_EXIT_CODE"
+echo "Result             : $FINAL_STATUS"
+echo "Simulation folder  : $WORK_DIR"
+echo "RASPA executable   : $RASPA_EXE"
 echo "============================================================"
 
 exit "$RASPA_EXIT_CODE"
