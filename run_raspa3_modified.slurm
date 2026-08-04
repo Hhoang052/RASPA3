@@ -12,6 +12,10 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --hint=nomultithread
+# Without this the partition default (DefMemPerNode=UNLIMITED) grants the job
+# all node memory, so only one job runs at a time. Calibrate per simulation:
+#   sacct -j <JOBID> --format=JobID,MaxRSS
+#SBATCH --mem=4G
 #SBATCH --time=24:00:00
 #SBATCH --output=raspa3-modified-%j.out
 #SBATCH --error=raspa3-modified-%j.err
